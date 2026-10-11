@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.env
+# 生の棋譜(対局者IDを含む)は置かない。公開してよいのは samples/anon だけ
+samples/raw/
+*.pdf

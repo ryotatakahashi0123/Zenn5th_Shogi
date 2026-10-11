@@ -1,0 +1,10 @@
+# 試験済みの版(2026-10-11、Python 3.13)
+fastapi==0.143.0
+uvicorn==0.53.0
+pydantic==2.13.5
+reportlab==5.0.1
+itsdangerous==2.2.0
+# 下の2つはクラウド上でしか動かないため、このリポジトリの試験では実行していない(版は未固定)。
+# 動いた版を確認したら固定すること。
+google-genai
+google-cloud-firestore

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ふりかえり将棋</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <h1><a href="#/" id="home-link">ふりかえり将棋</a></h1>
+  <span id="user-area" hidden><button id="btn-logout" class="link">ログアウト</button></span>
+</header>
+
+<main id="app">
+  <p id="flash" role="status" hidden></p>
+
+  <!-- ログイン -->
+  <section id="view-login" hidden>
+    <h2>ログイン</h2>
+    <form id="login-form" class="card">
+      <label>メールアドレス<input id="login-email" type="email" autocomplete="username" required></label>
+      <label>パスワード<input id="login-pass" type="password" autocomplete="current-password" required></label>
+      <button class="primary" type="submit">ログイン</button>
+    </form>
+  </section>
+
+  <!-- 対局一覧・貼り付け -->
+  <section id="view-list" hidden>
+    <h2>対局</h2>
+    <ul id="game-list" class="plain"></ul>
+    <h2>棋譜を読み込む</h2>
+    <form id="paste-form" class="card">
+      <label>KIFテキストを貼る
+        <textarea id="kif-text" rows="6" placeholder="手数----指手---------消費時間--&#10;1 ７六歩(77) ( 0:00/00:00:00)" required></textarea>
+      </label>
+      <label>またはファイルを選ぶ(UTF-8 / Shift_JIS)<input id="kif-file" type="file" accept=".kif,.kifu,.txt"></label>
+      <div class="row">
+        <label>自分の手番
+          <select id="my-side"><option value="">自動(既定は先手)</option><option value="b">先手</option><option value="w">後手</option></select>
+        </label>
+        <label>題名(任意)<input id="kif-title" maxlength="60"></label>
+      </div>
+      <button class="primary" type="submit">読み込む</button>
+    </form>
+    <p class="note">棋譜は自分の対局だけを貼る。対局者名が入っている場合は、公開の場に出さない。保存は30日で消える。</p>
+  </section>
+
+  <!-- 振り返りビュー -->
+  <section id="view-review" hidden>
+    <div class="bar">
+      <button id="btn-back" class="link">← 一覧</button>
+      <h2 id="game-title"></h2>
+    </div>
+    <p id="game-info" class="note"></p>
+    <p id="game-warn" class="warn" hidden></p>
+
+    <div id="board-wrap"><img id="board" alt="局面図" width="360" height="400"></div>
+    <div class="stepper" role="group" aria-label="手送り">
+      <button id="st-first" aria-label="先頭">|&lt;</button>
+      <button id="st-prev" aria-label="1手戻る">&lt;</button>
+      <output id="st-label">0手目</output>
+      <button id="st-next" aria-label="1手進む">&gt;</button>
+      <button id="st-last" aria-label="末尾">&gt;|</button>
+    </div>
+    <input id="st-range" type="range" min="0" value="0" aria-label="手数">
+    <p id="move-info" class="move-info"></p>
+    <button id="btn-mark" class="mark-btn">ここが悔しかった!</button>
+
+    <h3>時間グラフ <small class="note">タップでその手へ</small></h3>
+    <svg id="time-graph" viewBox="0 0 360 120" role="img" aria-label="手ごとの消費時間"></svg>
+    <ul class="legend" id="legend">
+      <li><i class="sw mine"></i>自分の消費時間</li>
+      <li><i class="sw opp"></i>相手</li>
+      <li><i class="dot user"></i>自分の印</li>
+      <li><i class="dot cand"></i>候補印(エージェント。薄い)</li>
+      <li><i class="line"></i>自分の残り時間</li>
+    </ul>
+
+    <h3>候補印 <small class="note">エージェントが示す候補。押すまで印にはならない</small></h3>
+    <ul id="cand-list" class="plain"></ul>
+    <h3>自分の印</h3>
+    <ul id="mark-list" class="plain"></ul>
+
+    <div class="actions">
+      <button id="btn-report" class="primary">レポートを作る</button>
+      <button id="btn-delete-game" class="danger">この対局を削除</button>
+    </div>
+
+    <h3>手順</h3>
+    <ol id="move-list" class="moves"></ol>
+  </section>
+
+  <!-- レポート -->
+  <section id="view-report" hidden>
+    <div class="bar">
+      <button id="btn-back-review" class="link">← 振り返りビュー</button>
+      <h2>レポート</h2>
+    </div>
+    <div id="report-body"></div>
+  </section>
+</main>
+
+<!-- 印の詳細パネル -->
+<div id="sheet" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+  <form id="sheet-form">
+    <h3 id="sheet-title"></h3>
+    <fieldset class="feel">
+      <legend>気持ち</legend>
+      <label><input type="radio" name="feeling" value="regret" checked>悔しい</label>
+      <label><input type="radio" name="feeling" value="unsure">迷った</label>
+      <label><input type="radio" name="feeling" value="ok">問題なし</label>
+    </fieldset>
+    <fieldset>
+      <legend>原因(複数可)</legend>
+      <div id="tag-box" class="tags"></div>
+    </fieldset>
+    <label>メモ(任意)<textarea id="mark-note" rows="2" maxlength="500"></textarea></label>
+    <div class="row">
+      <button class="primary" type="submit">保存</button>
+      <button type="button" id="sheet-del" class="danger">印を取り消す</button>
+      <button type="button" id="sheet-close">閉じる</button>
+    </div>
+  </form>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
