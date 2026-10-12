@@ -57,6 +57,7 @@ class GeminiBrain:
     """google-genai のVertexモード。環境変数 GOOGLE_GENAI_USE_VERTEXAI 等はCloud Run側で設定する。"""
 
     name = "gemini"
+    last_usage = None
 
     def __init__(self, model: str, project: str, location: str) -> None:
         from google import genai  # 遅延import
@@ -79,6 +80,12 @@ class GeminiBrain:
             max_output_tokens=2048,  # 思考トークンが出力枠を食う挙動があるため広めに取る(04の7.5)
         )
         resp = self.client.models.generate_content(model=self.model, contents=text, config=cfg)
+        u = getattr(resp, "usage_metadata", None)
+        # 思考トークンは出力として課金される。取れなかった値は0とし、費用は過小になりうる(画面に「概算」と出す)
+        self.last_usage = {
+            "in": int(getattr(u, "prompt_token_count", 0) or 0),
+            "out": int(getattr(u, "candidates_token_count", 0) or 0) + int(getattr(u, "thoughts_token_count", 0) or 0),
+        } if u is not None else None
         return resp.text or ""
 
     def suggest(self, ctx: dict, feedback: Optional[str] = None) -> str:

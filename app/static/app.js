@@ -355,7 +355,7 @@ async function showReport(id) {
   kids.push(sec("実行記録(エージェントが何を呼び、何を弾いたか)",
     ...runs.map((r) => h("div", {},
       h("strong", {}, `${r.kind === "questions" ? "実行1: 候補印の選定" : "実行2: 突き合わせと教材化"}`),
-      h("p", { class: "note" }, `LLM呼び出し ${r.guardrail.llmCalls}回 / 不採用 ${r.guardrail.rejected}回 / 縮退運転 ${r.guardrail.degraded ? "あり" : "なし"}` +
+      h("p", { class: "note" }, `LLM呼び出し ${r.guardrail.llmCalls}回` + (r.usage && r.usage.inTokens ? ` (入力${r.usage.inTokens}・出力${r.usage.outTokens}トークン、概算 $${r.usage.estCostUsd.toFixed(4)})` : "") + ` / 不採用 ${r.guardrail.rejected}回 / 縮退運転 ${r.guardrail.degraded ? "あり" : "なし"}` +
         (r.guardrail.reasons.length ? ` / 理由: ${r.guardrail.reasons.join(" | ")}` : "")),
       h("table", { class: "steps" }, h("tr", {}, h("th", {}, "ツール"), h("th", {}, "引数"), h("th", {}, "結果"), h("th", {}, "ms")),
         r.steps.map((s) => h("tr", {}, h("td", {}, s.tool), h("td", {}, s.args), h("td", {}, s.resultSummary), h("td", {}, String(s.ms)))))))));

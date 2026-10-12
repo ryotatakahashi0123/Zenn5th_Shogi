@@ -71,6 +71,8 @@ def login(body: LoginIn, response: Response, request: Request):
     uid = auth.check_credentials(cfg, body.email, body.password)
     if not uid:
         raise HTTPException(401, "メールアドレスまたはパスワードが違う")
+    if cfg.seed_demo:  # 30日の自動削除でサンプルが消えていても、ログイン時に入れ直す
+        service.seed_samples(request.app.state.store, cfg, uid)
     response.set_cookie(auth.COOKIE, auth.make_token(cfg, uid), max_age=auth.MAX_AGE, httponly=True,
                         samesite="lax", secure=cfg.is_production, path="/")
     return {"uid": uid}
@@ -101,7 +103,7 @@ def create_game(body: GameIn, uid: str = Depends(user), st=Depends(store), cfg=D
     if body.mySide not in (None, "b", "w"):
         raise HTTPException(422, "mySide は b か w")
     mine = [g for g in st.list_games(uid) if not g.get("sample")]
-    if len(mine) >= cfg.max_games_per_user:
+    if cfg.max_games_per_user and len(mine) >= cfg.max_games_per_user:
         raise HTTPException(429, f"保存できる対局数の上限({cfg.max_games_per_user})。不要な対局を削除する")
     try:
         doc = service.build_game_doc(body.kif, uid, cfg, my_side=body.mySide, title=body.title)
@@ -182,9 +184,31 @@ def delete_mark(move_no: int, g: dict = Depends(own_game), st=Depends(store)):
 
 # ---- エージェント ----
 def _quota(uid: str, st, cfg) -> None:
+    if cfg.daily_run_limit <= 0:  # 制限しない。費用は1日の費用上限で守る
+        return
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
     if st.incr_quota(uid, day) > cfg.daily_run_limit:
         raise HTTPException(429, f"1日の実行回数の上限({cfg.daily_run_limit})に達した")
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d")
+
+
+def _brain_for_today(request: Request, st, cfg):
+    """全体の1日の費用上限に達していれば None(=AIを使わない縮退運転)を返す。"""
+    brain = request.app.state.brain
+    if brain is not None and st.get_cost(_today()) >= cfg.daily_cost_cap_usd:
+        return None, True
+    return brain, False
+
+
+def _finish(run: dict, st, cfg, capped: bool) -> None:
+    if capped:
+        run["guardrail"]["reasons"].append(
+            f"1日の費用上限(概算 {cfg.daily_cost_cap_usd:.2f}ドル)に達したため、AIを使わない")
+    if run["usage"]["estCostUsd"] > 0:
+        st.add_cost(_today(), run["usage"]["estCostUsd"])
 
 
 @router.post("/api/games/{game_id}/agent/questions")
@@ -192,10 +216,13 @@ def agent_questions(request: Request, g: dict = Depends(own_game), uid: str = De
                     st=Depends(store), cfg=Depends(settings)):
     _quota(uid, st, cfg)
     pos, _ = service.positions_for(g)
-    run = run_suggestions(g, pos, request.app.state.brain, cfg)
+    brain, capped = _brain_for_today(request, st, cfg)
+    run = run_suggestions(g, pos, brain, cfg)
+    _finish(run, st, cfg, capped)
     st.add_run(g["id"], run)
     log.info("run_done", extra={"game_id": g["id"], "run_id": run["id"], "kind": "questions",
-                                "degraded": run["guardrail"]["degraded"]})
+                                "degraded": run["guardrail"]["degraded"],
+                                "est_cost_usd": run["usage"]["estCostUsd"]})
     return run
 
 
@@ -204,10 +231,13 @@ def agent_report(request: Request, g: dict = Depends(own_game), uid: str = Depen
                  st=Depends(store), cfg=Depends(settings)):
     _quota(uid, st, cfg)
     pos, _ = service.positions_for(g)
-    run = run_report(g, pos, st.list_marks(g["id"]), st.list_cards(), request.app.state.brain, cfg)
+    brain, capped = _brain_for_today(request, st, cfg)
+    run = run_report(g, pos, st.list_marks(g["id"]), st.list_cards(), brain, cfg)
+    _finish(run, st, cfg, capped)
     st.add_run(g["id"], run)
     log.info("run_done", extra={"game_id": g["id"], "run_id": run["id"], "kind": "report",
-                                "degraded": run["guardrail"]["degraded"]})
+                                "degraded": run["guardrail"]["degraded"],
+                                "est_cost_usd": run["usage"]["estCostUsd"]})
     return run
 
 

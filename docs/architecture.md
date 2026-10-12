@@ -8,7 +8,7 @@ flowchart LR
   A -->|検証済みの数字だけ渡す| G[Gemini on Vertex AI<br/>google-genai]
   G -->|JSON| A
   A -.->|不採用・失敗| R[規則による縮退運転]
-  CR --> F[(Firestore<br/>games / reviews / runs / quota / knowledge_cards)]
+  CR --> F[(Cloud Storage<br/>games / owners / quota / cost / cards)]
   CR --> S[Secret Manager<br/>セッション秘密・デモ認証]
 ```
 
@@ -24,8 +24,17 @@ flowchart LR
 - LLM出力は JSONスキーマ → 手番号の存在・候補集合内 → 文字数 → 断定語 → 数字が与えたデータ由来か、の順に検証。落ちたら理由つきで再試行(最大2回)→ 縮退
 - `brain.py` の `Brain` インターフェース(suggest / narrate)を差し替えれば、ADKなど別の実装にできる
 
-## Firestoreのデータ構造
-- `games/{id}`: 対局本体(moves、派生値、ownerUid、expireAt)。`sample=True` はTTLなし
-- `games/{id}/reviews/{moveNo}`: 本人の印 / `games/{id}/runs/{runId}`: 実行記録
-- `quota/{uid}_{yyyymmdd}`: 1日の実行回数 / `knowledge_cards/{id}`
-- 複合インデックスを避けるため、並べ替えはPython側で行う
+## Cloud Storage のファイル構造(既定の保存先。`STORE=gcs`)
+```
+games/{id}/game.json             対局本体(棋譜の解析結果、ownerUid)
+games/{id}/marks/{moveNo}.json   本人の印
+games/{id}/runs/{runId}.json     実行記録(トークン数、概算費用を含む)
+owners/{uid}/{id}                利用者ごとの一覧用の目印(空ファイル)
+quota/{uid}_{yyyymmdd}.json      実行回数 / cost/{yyyymmdd}.json  1日の概算費用の合計
+cards/{id}.json                  知識カード(期限なし)
+```
+- 30日で自動削除: バケットのライフサイクル規則(`scripts/gcs_lifecycle.json`)。対象は `games/ owners/ quota/ cost/`。`cards/` は消えない
+- 作成から30日で消えるので、本体・印・実行記録・目印がそれぞれ別の時刻に消える。本体が先に消えた目印は、一覧で飛ばす
+- サンプル局は、ログイン時に無ければ入れ直す
+- カウンタは、読んだ版が変わっていなければ書く方式(競合したらやり直す)で更新する
+- `STORE=firestore`(Firestore版)も残してあるが、既定ではない。`STORE=memory` は開発・試験用

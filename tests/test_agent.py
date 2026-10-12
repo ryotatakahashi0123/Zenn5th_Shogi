@@ -128,3 +128,26 @@ def test_note_is_not_sent_to_llm(game, positions, cfg):
     marks = [{"moveNo": 55, "feeling": "regret", "causeTags": [], "note": "ひみつの自由記述"}]
     run_report(game, positions, marks, [], Spy(), cfg)
     assert "ひみつの自由記述" not in seen["ctx"]
+
+
+class Metered(FakeBrain):
+    """トークン数を返す偽のLLM。1回あたり 入力1000・出力2000。"""
+    name = "metered"
+    last_usage = None
+
+    def suggest(self, ctx, feedback=None):
+        self.last_usage = {"in": 1000, "out": 2000}
+        return super().suggest(ctx, feedback)
+
+
+
+def test_usage_and_cost_recorded(game, positions, cfg):
+    run = run_suggestions(game, positions, Metered(), cfg)
+    u = run["usage"]
+    assert (u["inTokens"], u["outTokens"]) == (1000, 2000)
+    assert u["estCostUsd"] == pytest.approx((1000 * cfg.price_in_per_m + 2000 * cfg.price_out_per_m) / 1e6, abs=1e-6)
+    assert not run["guardrail"]["degraded"]
+
+
+def test_fake_brain_has_no_cost(game, positions, cfg):
+    assert run_suggestions(game, positions, FakeBrain(), cfg)["usage"]["estCostUsd"] == 0
