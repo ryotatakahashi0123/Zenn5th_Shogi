@@ -26,7 +26,23 @@ DISCLAIMER = ("評価値は参考値(エンジン・探索深さ・設定で変�
 def _new_run(kind: str) -> dict:
     return {"id": new_id(), "kind": kind, "startedAt": now_iso(), "finishedAt": None,
             "steps": [], "output": None,
-            "guardrail": {"llmCalls": 0, "rejected": 0, "reasons": [], "degraded": False}}
+            "guardrail": {"llmCalls": 0, "rejected": 0, "reasons": [], "degraded": False},
+            "usage": {"inTokens": 0, "outTokens": 0, "estCostUsd": 0.0}}
+
+
+def est_cost(cfg: Settings, in_tokens: int, out_tokens: int) -> float:
+    """概算の費用(USD)。単価は Settings。実際の請求とは一致しない場合がある。"""
+    return round((in_tokens * cfg.price_in_per_m + out_tokens * cfg.price_out_per_m) / 1_000_000, 6)
+
+
+def _add_usage(run: dict, brain, cfg: Settings) -> None:
+    u = getattr(brain, "last_usage", None)
+    if not u:
+        return
+    t = run["usage"]
+    t["inTokens"] += u["in"]
+    t["outTokens"] += u["out"]
+    t["estCostUsd"] = est_cost(cfg, t["inTokens"], t["outTokens"])
 
 
 def _llm_loop(brain: Optional[Brain], method: str, ctx: dict, validator: Callable[[str], tuple],
@@ -44,10 +60,13 @@ def _llm_loop(brain: Optional[Brain], method: str, ctx: dict, validator: Callabl
             break
         g["llmCalls"] += 1
         t0 = time.perf_counter()
+        if hasattr(brain, "last_usage"):
+            brain.last_usage = None
         try:
             raw = getattr(brain, method)(ctx, feedback)
+            _add_usage(run, brain, cfg)
         except Exception as e:  # 認証・ネットワーク・割当などの失敗は縮退運転へ
-            log.warning("llm_error", extra={"method": method, "error": type(e).__name__})
+            log.warning("llm_error", extra={"method": method, "error": type(e).__name__, "detail": str(e)[:300]})
             g["rejected"] += 1
             g["reasons"].append(f"LLM呼び出し失敗: {type(e).__name__}")
             run["steps"].append({"tool": f"llm.{method}", "args": brain.name, "resultSummary": "失敗",

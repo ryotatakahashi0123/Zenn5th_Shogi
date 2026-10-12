@@ -7,4 +7,4 @@ itsdangerous==2.2.0
 # 下の2つはクラウド上でしか動かないため、このリポジトリの試験では実行していない(版は未固定)。
 # 動いた版を確認したら固定すること。
 google-genai
-google-cloud-firestore
+google-cloud-storage

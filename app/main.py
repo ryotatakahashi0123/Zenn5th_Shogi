@@ -27,7 +27,7 @@ NOBRAIN = object()
 def create_app(settings: Optional[Settings] = None, store: Optional[Store] = None,
                brain=NOBRAIN) -> FastAPI:
     cfg = settings or Settings.from_env()
-    st = store or make_store(cfg.store, cfg.gcp_project)
+    st = store or make_store(cfg.store, cfg.gcp_project, cfg.gcs_bucket)
     br: Optional[Brain] = make_brain(cfg.brain, cfg.gemini_model, cfg.gcp_project, cfg.gcp_location) \
         if brain is NOBRAIN else brain
 

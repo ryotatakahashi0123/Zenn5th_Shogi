@@ -162,3 +162,60 @@ def test_unhandled_error_is_500_json_not_traceback():
     app.state.store.list_games = boom
     r = c.get("/api/games")
     assert r.status_code == 500 and r.json() == {"detail": "サーバーでエラーが起きた"}
+
+
+def test_daily_cost_cap_forces_degraded():
+    from app.agent.brain import FakeBrain as FB
+
+    class Metered(FB):
+        name = "metered"
+        last_usage = None
+
+        def suggest(self, ctx, feedback=None):
+            self.last_usage = {"in": 100000, "out": 100000}  # 1回で約1.15ドル
+            return super().suggest(ctx, feedback)
+
+    c, app = make_client(Metered(), daily_cost_cap_usd=1.0)
+    login(c)
+    r1 = c.post("/api/games/sample-sample01/agent/questions").json()
+    assert r1["guardrail"]["degraded"] is False and r1["usage"]["estCostUsd"] > 1.0
+    r2 = c.post("/api/games/sample-sample01/agent/questions").json()   # 上限超過 → AIを使わない
+    assert r2["guardrail"]["degraded"] is True
+    assert any("費用上限" in x for x in r2["guardrail"]["reasons"])
+    assert r2["output"]["marks"] and r2["usage"]["estCostUsd"] == 0
+    # 上限超過でもレポートは作れる(規則による要約)
+    rep = c.post("/api/games/sample-sample01/agent/report").json()
+    assert rep["output"]["narration"]["source"] == "rule"
+
+
+def test_no_limits_by_default_and_gcs_backend_end_to_end():
+    from app.infra.store import GcsStore
+    from .fake_gcs import FakeBucket
+    cfg = Settings()
+    cfg.validate()
+    assert cfg.daily_run_limit == 0 and cfg.max_games_per_user == 0
+    app = create_app(cfg, GcsStore(FakeBucket()), FakeBrain())
+    c = TestClient(app)
+    login(c)
+    gid = c.post("/api/games", json={"kif": read_sample("sample02.kif"), "title": "GCS"}).json()["id"]
+    assert c.put(f"/api/games/{gid}/marks/10", json={"feeling": "regret", "causeTags": []}).status_code == 200
+    for _ in range(35):                         # 既定では実行回数に上限がない
+        assert c.post(f"/api/games/{gid}/agent/questions").status_code == 200
+    rep = c.post(f"/api/games/{gid}/agent/report").json()
+    assert rep["output"]["problems"]
+    assert c.get(f"/api/games/{gid}/report.pdf").content[:5] == b"%PDF-"
+    assert c.delete(f"/api/games/{gid}").status_code == 200
+    assert c.get(f"/api/games/{gid}").status_code == 404
+
+
+def test_samples_reseeded_on_login_after_expiry():
+    from app.infra.store import GcsStore
+    from .fake_gcs import FakeBucket
+    cfg = Settings()
+    cfg.validate()
+    b = FakeBucket()
+    c = TestClient(create_app(cfg, GcsStore(b), FakeBrain()))
+    for n in [n for n in b.data if n.startswith("games/sample-")]:   # 期限で消えた状況
+        del b.data[n]
+    login(c)
+    assert "sample-sample01" in {i["id"] for i in c.get("/api/games").json()}

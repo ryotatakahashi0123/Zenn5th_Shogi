@@ -17,10 +17,18 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
 @dataclass
 class Settings:
     env: str = "dev"  # Cloud Run上では "production"(K_SERVICE があれば自動)
-    store: str = "memory"  # memory | firestore
+    store: str = "memory"  # memory | gcs | firestore
+    gcs_bucket: str = ""
     brain: str = "fake"  # fake | gemini | none(none=LLMを呼ばない=縮退運転)
     gemini_model: str = "gemini-3.5-flash"  # 候補。提供状況は未確認(U-11)。実装時に公式で再確認
     gcp_project: str = ""
@@ -32,8 +40,12 @@ class Settings:
     seed_demo: bool = True
     ttl_days: int = 30
     max_kif_bytes: int = 200 * 1024
-    max_games_per_user: int = 50
-    daily_run_limit: int = 30
+    max_games_per_user: int = 0   # 0=制限しない(審査用)。保存は30日で消える
+    daily_run_limit: int = 0      # 0=制限しない(審査用)。費用は下の1日上限で守る
+    # 費用の管理(単価は2026-10-11時点の公式料金表のGemini 3.5 Flash・非グローバル。モデルを変えたら環境変数で直す)
+    price_in_per_m: float = 1.65     # USD / 100万入力トークン
+    price_out_per_m: float = 9.90    # USD / 100万出力トークン(思考トークンを含む)
+    daily_cost_cap_usd: float = 3.0  # 全利用者の合計。超えたらAIを使わず規則による要約にする
     # 時間分析(04の4章)
     long_min_sec: int = 30
     long_ratio: float = 4.0
@@ -59,7 +71,8 @@ class Settings:
         on_cloud_run = bool(e.get("K_SERVICE"))
         s = cls(
             env=e.get("APP_ENV", "production" if on_cloud_run else "dev"),
-            store=e.get("STORE", "firestore" if on_cloud_run else "memory"),
+            store=e.get("STORE", "gcs" if on_cloud_run else "memory"),
+            gcs_bucket=e.get("GCS_BUCKET", ""),
             brain=e.get("BRAIN", "gemini" if on_cloud_run else "fake"),
             gemini_model=e.get("GEMINI_MODEL", "gemini-3.5-flash"),
             gcp_project=e.get("GOOGLE_CLOUD_PROJECT", ""),
@@ -70,7 +83,11 @@ class Settings:
             my_ids=[x.strip() for x in e.get("MY_PLAYER_IDS", "").split(",") if x.strip()],
             seed_demo=e.get("SEED_DEMO", "0" if on_cloud_run else "1") not in ("0", "false", "False"),
             ttl_days=_int("TTL_DAYS", 30),
-            daily_run_limit=_int("DAILY_RUN_LIMIT", 30),
+            daily_run_limit=_int("DAILY_RUN_LIMIT", 0),
+            max_games_per_user=_int("MAX_GAMES_PER_USER", 0),
+            price_in_per_m=_float("PRICE_IN_PER_M", 1.65),
+            price_out_per_m=_float("PRICE_OUT_PER_M", 9.90),
+            daily_cost_cap_usd=_float("DAILY_COST_CAP_USD", 3.0),
             long_min_sec=_int("LONG_MIN_SEC", 30),
             quick_sec=_int("QUICK_SEC", 3),
             low_remaining_sec=_int("LOW_REMAINING_SEC", 120),
@@ -81,6 +98,8 @@ class Settings:
 
     def validate(self) -> None:
         """本番で秘密が未設定のまま起動しない。開発時だけ既定値を入れる。"""
+        if self.store == "gcs" and not self.gcs_bucket:
+            raise RuntimeError("STORE=gcs には環境変数 GCS_BUCKET が必要")
         if self.is_production:
             missing = [n for n, v in (("SESSION_SECRET", self.session_secret),
                                       ("DEMO_EMAIL", self.demo_email),

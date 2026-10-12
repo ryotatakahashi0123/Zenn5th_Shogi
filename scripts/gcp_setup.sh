@@ -9,31 +9,32 @@ REGION="${REGION:-asia-northeast1}"
 SA_NAME="${SA_NAME:-furikaeri-run}"
 SA="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 REPO="${REPO:-furikaeri}"
+BUCKET="${BUCKET:-${PROJECT_ID}-furikaeri-data}"
 
 gcloud config set project "$PROJECT_ID"
 
 echo "== API の有効化(請求先アカウントの紐づけが必要)"
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
-  firestore.googleapis.com aiplatform.googleapis.com secretmanager.googleapis.com
+  storage.googleapis.com aiplatform.googleapis.com secretmanager.googleapis.com
 
 echo "== Artifact Registry"
 gcloud artifacts repositories describe "$REPO" --location "$REGION" >/dev/null 2>&1 || \
   gcloud artifacts repositories create "$REPO" --repository-format=docker --location="$REGION"
 
-echo "== Firestore (Native)"
-gcloud firestore databases describe >/dev/null 2>&1 || \
-  gcloud firestore databases create --location="$REGION" --type=firestore-native
+echo "== Cloud Storage バケット(棋譜・印・実行記録を置く。30日で自動削除)"
+gcloud storage buckets describe "gs://$BUCKET" >/dev/null 2>&1 || \
+  gcloud storage buckets create "gs://$BUCKET" --location="$REGION" --uniform-bucket-level-access --public-access-prevention
+gcloud storage buckets update "gs://$BUCKET" --lifecycle-file="$(dirname "$0")/gcs_lifecycle.json"
 
 echo "== 実行用サービスアカウント(最小権限)"
 gcloud iam service-accounts describe "$SA" >/dev/null 2>&1 || \
   gcloud iam service-accounts create "$SA_NAME" --display-name="furikaeri runtime"
-for ROLE in roles/datastore.user roles/aiplatform.user; do
+for ROLE in roles/aiplatform.user; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:$SA" --role="$ROLE" --condition=None >/dev/null
 done
 
-echo "== Firestore TTL(games.expireAt)。子コレクション(reviews/runs)と quota は自動では消えない"
-gcloud firestore fields ttls update expireAt --collection-group=games --enable-ttl --async || \
-  echo "TTL設定に失敗。コンソールで設定する(docs/gcp_setup.md)"
+echo "== 実行用サービスアカウントにバケットの読み書き権限(このバケットだけ)"
+gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member="serviceAccount:$SA" --role=roles/storage.objectUser >/dev/null
 
 echo "== Secret Manager"
 mk_secret() { # 名前 値
@@ -53,4 +54,5 @@ mk_secret furikaeri-demo-email "$DEMO_EMAIL_VAL"
 mk_secret furikaeri-demo-password "$DEMO_PASSWORD_VAL"
 
 echo
+echo "バケット: gs://$BUCKET"
 echo "完了。次: ./scripts/deploy.sh   (予算アラートは docs/gcp_setup.md の手順で請求アカウント側に設定する)"

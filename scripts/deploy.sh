@@ -5,7 +5,9 @@ set -euo pipefail
 REGION="${REGION:-asia-northeast1}"
 SERVICE="${SERVICE:-furikaeri}"
 SA="${SA_NAME:-furikaeri-run}@${PROJECT_ID}.iam.gserviceaccount.com"
-MODEL="${GEMINI_MODEL:-gemini-3.5-flash}"   # 候補。提供状況は未確認。失敗したら公式で確認して差し替える
+MODEL="${GEMINI_MODEL:-gemini-3.5-flash}"
+BUCKET="${BUCKET:-${PROJECT_ID}-furikaeri-data}"
+CAP="${DAILY_COST_CAP_USD:-3.0}"   # 全体の1日の概算費用の上限(USD)。超えるとAIを使わず規則による要約にする   # 候補。提供状況は未確認。失敗したら公式で確認して差し替える
 
 cd "$(dirname "$0")/.."
 gcloud run deploy "$SERVICE" \
@@ -13,7 +15,7 @@ gcloud run deploy "$SERVICE" \
   --service-account "$SA" \
   --allow-unauthenticated \
   --min-instances 0 --max-instances 3 --memory 512Mi --timeout 120 \
-  --set-env-vars "STORE=firestore,BRAIN=gemini,GEMINI_MODEL=${MODEL},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=true,SEED_DEMO=1,APP_ENV=production" \
+  --set-env-vars "STORE=gcs,GCS_BUCKET=${BUCKET},BRAIN=gemini,GEMINI_MODEL=${MODEL},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=true,SEED_DEMO=1,APP_ENV=production,DAILY_COST_CAP_USD=${CAP}" \
   --set-secrets "SESSION_SECRET=furikaeri-session-secret:latest,DEMO_EMAIL=furikaeri-demo-email:latest,DEMO_PASSWORD=furikaeri-demo-password:latest"
 
 URL="$(gcloud run services describe "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --format='value(status.url)')"
