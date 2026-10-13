@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<style>
+  /* 棋譜入力の将棋盤。盤の図（SVG）は Python 側で cshogi が描いたものを受け取り、押されたマスを返す。 */
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: "BIZ UDPGothic", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, "Noto Sans JP", sans-serif;
+         font-size: 14px; }
+  #wrap { max-width: 540px; }
+  #board svg { display: block; width: 100%; height: auto; border-radius: 4px; cursor: pointer;
+               -webkit-user-select: none; user-select: none; }
+  #board.locked svg { cursor: default; opacity: 0.75; }
+  .hand { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 34px; margin: 4px 0; }
+  .hand span { margin-right: 4px; }
+  .hand button { font: inherit; font-size: 16px; min-width: 40px; padding: 3px 8px; border: 1px solid #8a6d3b;
+                 border-radius: 4px; background: #f5deb3; color: #000; cursor: pointer; }
+  .hand button.sel { background: #f6b94d; border-width: 2px; }
+  .hand button:disabled { opacity: 0.55; cursor: default; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div class="hand" id="top"></div>
+  <div id="board"></div>
+  <div class="hand" id="bottom"></div>
+</div>
+<script>
+(function () {
+  // Streamlit のコンポーネントとの通信（ビルド不要の最小実装）
+  function send(type, data) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), "*");
+  }
+  var locked = false, count = 0;
+  function pick(key) {  // 押したマス（"7g"）か持ち駒（"P*"）を返す。n は同じ場所を続けて押しても区別できるようにする番号
+    if (locked) return;
+    count += 1;
+    send("streamlit:setComponentValue", { value: { key: key, n: Date.now() + "-" + count }, dataType: "json" });
+  }
+  function hand(el, label, pieces) {
+    el.textContent = "";
+    var s = document.createElement("span");
+    s.textContent = label + (pieces.length ? "" : "　なし");
+    el.appendChild(s);
+    pieces.forEach(function (p) {
+      var b = document.createElement("button");
+      b.textContent = p.label;
+      b.disabled = !p.enabled || locked;
+      if (p.selected) b.className = "sel";
+      b.addEventListener("click", function () { pick(p.key); });
+      el.appendChild(b);
+    });
+  }
+  function render(args, theme) {
+    locked = !!args.locked;
+    if (theme && theme.textColor) document.body.style.color = theme.textColor;
+    var board = document.getElementById("board");
+    board.className = locked ? "locked" : "";
+    board.innerHTML = args.svg;  // アプリが自分で描いた図だけが入る（利用者の入力した文字は含まない）
+    var svg = board.querySelector("svg");
+    if (svg) {
+      svg.removeAttribute("width");
+      svg.removeAttribute("height");
+      svg.addEventListener("click", function (ev) {
+        var r = svg.getBoundingClientRect(), g = args.geom;  // g: 図の中での盤の位置（viewBox の単位）
+        var x = (ev.clientX - r.left) / r.width * g.width, y = (ev.clientY - r.top) / r.height * g.height;
+        var col = Math.floor((x - g.x) / g.cell), row = Math.floor((y - g.y) / g.cell);
+        if (col < 0 || col > 8 || row < 0 || row > 8) return;
+        pick(String(9 - col) + "abcdefghi".charAt(row));
+      });
+    }
+    hand(document.getElementById("top"), "☖後手の持駒", args.top || []);
+    hand(document.getElementById("bottom"), "☗先手の持駒", args.bottom || []);
+    send("streamlit:setFrameHeight", { height: document.getElementById("wrap").offsetHeight + 4 });
+  }
+  var last = null;
+  window.addEventListener("message", function (ev) {
+    if (ev.data && ev.data.type === "streamlit:render") {
+      last = ev.data;
+      render(ev.data.args, ev.data.theme);
+    }
+  });
+  window.addEventListener("resize", function () { if (last) render(last.args, last.theme); });
+  send("streamlit:componentReady", { apiVersion: 1 });
+})();
+</script>
+</body>
+</html>

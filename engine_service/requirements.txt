@@ -1,0 +1,4 @@
+# shogi-engine（FastAPI + やねうら王）
+cshogi==1.0.9       # GPL-3.0
+fastapi==0.141.1    # MIT
+uvicorn==0.53.0     # BSD-3-Clause
