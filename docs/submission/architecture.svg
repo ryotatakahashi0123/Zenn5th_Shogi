@@ -8,7 +8,7 @@
   <text x="266" y="94" fill="#3b6fb6" font-weight="bold">Cloud Run</text>
   <rect x="275" y="110" width="280" height="190" rx="8" fill="#fff" stroke="#333"/>
   <text x="415" y="138" text-anchor="middle" font-weight="bold">shogi-web（公開）</text>
-  <text x="290" y="166">・Streamlit の画面</text><text x="290" y="188">・ADK エージェント（AIコーチ）</text><text x="290" y="210">・印とエンジン判定の突き合わせ</text><text x="290" y="232">・ふりかえりノート（PDF）</text><text x="290" y="254">・ログイン（パスワードはハッシュのみ）</text><text x="290" y="276">・裏で進む 解析→ふりかえり→保存</text>
+  <text x="290" y="166">・Streamlit の画面</text><text x="290" y="188">・ADK エージェント（AIコーチ）</text><text x="290" y="210">・印とエンジン判定の突き合わせ</text><text x="290" y="232">・ふりかえりノート（PDF）</text><text x="290" y="254">・ログイン（ハッシュで照合）</text><text x="290" y="276">・裏で進む 解析→ふりかえり→保存</text>
   <rect x="275" y="370" width="280" height="115" rx="8" fill="#fff" stroke="#333"/>
   <text x="415" y="398" text-anchor="middle" font-weight="bold">shogi-engine（非公開）</text>
   <text x="290" y="424">・FastAPI</text><text x="290" y="446">・やねうら王 + 水匠5</text><text x="290" y="468">・全手解析、深掘り、手の比較</text>
