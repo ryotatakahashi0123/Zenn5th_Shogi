@@ -1,10 +1,11 @@
-# 試験済みの版(2026-10-11、Python 3.13)
-fastapi==0.143.0
-uvicorn==0.53.0
-pydantic==2.13.5
-reportlab==5.0.1
-itsdangerous==2.2.0
-# 下の2つはクラウド上でしか動かないため、このリポジトリの試験では実行していない(版は未固定)。
-# 動いた版を確認したら固定すること。
-google-genai
-google-cloud-storage
+# shogi-web（Streamlit + ADK エージェント）
+cshogi==1.0.9                 # GPL-3.0
+streamlit==1.65.0             # Apache-2.0
+pandas==3.0.5                 # BSD-3-Clause
+altair==6.3.0                 # BSD-3-Clause
+reportlab==5.0.1              # BSD-3-Clause（ふりかえりノートのPDF）
+google-adk==2.11.0            # Apache-2.0
+google-cloud-storage==3.17.0  # Apache-2.0
+google-auth==2.61.0           # Apache-2.0
+requests==2.34.2              # Apache-2.0（google-auth の ID トークン取得に使用）
+httpx==0.28.1                 # BSD-3-Clause

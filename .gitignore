@@ -1,8 +1,13 @@
 __pycache__/
 *.pyc
-.pytest_cache/
 .venv/
-.env
-# 生の棋譜(対局者IDを含む)は置かない。公開してよいのは samples/anon だけ
-samples/raw/
-*.pdf
+# エンジン実行ファイルと評価関数はコミットしない（README の手順で各自用意する）
+engine/
+*.7z
+nn.bin
+result.csv
+*_analysis.csv
+.pytest_cache/
+YaneuraOu/
+*.zip
+data/
