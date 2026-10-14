@@ -16,6 +16,9 @@ from .kifu_analysis import Kifu, MAX_PLIES, analyze_kifu, validate_kifu, winrate
 
 DEEP_MS = 2000       # 深掘りの思考時間
 DEEP_MULTIPV = 3     # 深掘りで出す候補手の数
+LINE_PLIES = 12      # 画面・ノート・AIコーチに出す読み筋の長さ（発案者の指示 2026-10-14: その先の展開まで出す）
+EXTEND_MS = 400      # 読み筋を伸ばすときの1回の思考時間
+EXTEND_CALLS = 3     # 読み筋を伸ばすために読み直す回数の上限（1つの読み筋あたり）
 PROMOTED_FILL = "#d0021b"  # 成り駒の色（発案者の指示 2026-10-14。成ったことがひと目で分かるように）
 
 
@@ -74,8 +77,75 @@ def _board_at(kifu: Kifu, ply: int) -> tuple[cshogi.Board, list[str]]:
     return board, usi
 
 
-def _cand(board: cshogi.Board, r: AnalysisResult) -> dict:
-    """候補手1つを、指す側から見た評価値・勝率で表す。"""
+def legal_prefix(board: cshogi.Board, line: list[str]) -> list[str]:
+    """読み筋のうち、その局面から順に指せる手までを返す（合わない手から先は捨てる）。"""
+    b, out = board.copy(), []
+    for u in line:
+        try:
+            m = b.move_from_usi(u)
+        except Exception:
+            break
+        if not m or not b.is_legal(m):
+            break
+        out.append(u)
+        b.push(m)
+    return out
+
+
+def extend_pv(engine: UsiEngine, start_sfen: str, moves: list[str], pv: list[str], want: int = LINE_PLIES,
+              ms: int = EXTEND_MS, calls: int = EXTEND_CALLS) -> list[str]:
+    """読み筋が短く途切れたとき、終わりの局面をエンジンで読み直して続きをつなげる（エンジンを直接使う版）。
+
+    start_sfen + moves が読み筋の始まる局面。終局したら伸ばさない。返すのは読み筋（USI）だけ。
+    """
+    board = cshogi.Board(start_sfen)
+    for u in moves:
+        board.push(board.move_from_usi(u))
+    pv = legal_prefix(board, pv)
+    for _ in range(calls):
+        if len(pv) >= want:
+            break
+        end = board.copy()
+        for u in pv:
+            end.push(end.move_from_usi(u))
+        if end.is_game_over():
+            break
+        more = legal_prefix(end, engine.analyze(f"sfen {start_sfen}", moves + pv, ms).pv)
+        if not more:
+            break
+        pv += more
+    return pv[:want]
+
+
+def extend_line(client, start_sfen: str, line: list[str], want: int = LINE_PLIES, ms: int = EXTEND_MS,
+                calls: int = EXTEND_CALLS) -> list[str]:
+    """extend_pv の、エンジンの窓口（shogi_coach.engine_client）を使う版。新しいエンジンAPIを足さないため、
+    読み筋の最後の1手だけの短い棋譜を全手解析にかけ、その手の後の読み筋（行の pv）を続きとして使う。
+
+    line は start_sfen から始まる手順（USI）。伸ばした手順を返す（最初の line も含む）。
+    """
+    board = cshogi.Board(start_sfen)
+    line = legal_prefix(board, line)
+    for _ in range(calls):
+        if len(line) >= want or not line:
+            break
+        before = board.copy()
+        for u in line[:-1]:
+            before.push(before.move_from_usi(u))
+        end = before.copy()
+        end.push(end.move_from_usi(line[-1]))
+        if end.is_game_over():
+            break
+        rows = client.analyze_game(Kifu(["", ""], before.sfen(), [before.move_from_usi(line[-1])]), ms)["rows"]
+        more = legal_prefix(end, (rows[-1].get("pv") or "").split() if rows else [])
+        if not more:
+            break
+        line += more
+    return line[:want]
+
+
+def _cand(board: cshogi.Board, r: AnalysisResult, line: list[str] | None = None) -> dict:
+    """候補手1つを、指す側から見た評価値・勝率で表す。line があれば、それを読み筋にする（伸ばしたもの）。"""
     me = r.score_for_sente(True)  # 手番側視点の値（score_for_sente(True) は符号を変えない）
     return {
         "move_usi": r.bestmove,
@@ -83,7 +153,7 @@ def _cand(board: cshogi.Board, r: AnalysisResult) -> dict:
         "eval_for_mover": me,
         "winrate_for_mover": round(winrate(me), 3),
         "mate_in": r.score_mate,
-        "line": pv_jp(board, r.pv),
+        "line": pv_jp(board, line if line is not None else r.pv, LINE_PLIES),
         "depth": r.depth,
     }
 
@@ -104,7 +174,7 @@ def deep_dive(engine: UsiEngine, kifu: Kifu, ply: int, ms: int = DEEP_MS,
     board, usi = _board_at(kifu, ply)
     actual = cshogi.move_to_usi(kifu.moves[ply - 1])
     res = engine.analyze(f"sfen {kifu.start_sfen}", usi, ms, multipv=multipv)
-    cands = [_cand(board, c) for c in res.candidates if c.bestmove]
+    cands = [_cand(board, c, extend_pv(engine, kifu.start_sfen, usi, c.pv)) for c in res.candidates if c.bestmove]
     actual_c = next((c for c in cands if c["move_usi"] == actual), None)
     if actual_c is None:
         actual_c = _eval_move(engine, kifu.start_sfen, usi, board, actual, ms // 2)
@@ -145,7 +215,8 @@ def _eval_move(engine, start_sfen, usi, board, move_usi, ms) -> dict:
         "eval_for_mover": me,
         "winrate_for_mover": round(winrate(me), 3),
         "mate_in": mate,
-        "line": [move_jp(board, move_usi)] + pv_jp(after, r.pv, 5),
+        "line": [move_jp(board, move_usi)] + pv_jp(after, extend_pv(engine, start_sfen, usi + [move_usi], r.pv,
+                                                                     LINE_PLIES - 1), LINE_PLIES - 1),
         "depth": r.depth,
     }
 
@@ -162,21 +233,63 @@ def move_list(kifu: Kifu) -> list[dict]:
     return out
 
 
-def lines_jp(kifu: Kifu, row: dict) -> dict:
+def lines_jp(kifu: Kifu, row: dict, ext: dict | None = None) -> dict:
     """全手解析の行にある読み筋（USI）を、日本語の手順にする。エンジンは呼ばない。
 
     best: 指す前の局面で、エンジンの最善手から始まる手順。actual: 実戦の手と、その後の手順。
+    ext: 伸ばした読み筋（ext_key → 指す前の局面からの USI の手順。extend_rows が作る）。あればそれを使う。
     読み筋が行に無い（古い結果・終局）ときは空の並び。
     """
-    def line(ply, pv):
+    ext = ext or {}
+    try:
+        before, _ = board_after(kifu, row["ply"] - 1)
+    except Exception:
+        return {"best": [], "actual": []}
+
+    def line(usi):
         try:
-            return pv_jp(board_after(kifu, ply)[0], (pv or "").split(), 8)
+            return pv_jp(before, usi, LINE_PLIES)
         except Exception:  # 局面に合わない手が混じっていても、画面やPDFは止めない
             return []
-    before, _ = board_after(kifu, row["ply"] - 1)
-    actual = line(row["ply"], row.get("pv"))
-    return {"best": line(row["ply"] - 1, row.get("best_pv")),
-            "actual": [move_jp(before, row["move_usi"])] + actual if actual else []}
+    best = ext.get(ext_key(row["ply"], "best")) or (row.get("best_pv") or "").split()
+    actual = ext.get(ext_key(row["ply"], "actual"))
+    if actual is None:
+        pv = (row.get("pv") or "").split()
+        actual = [row["move_usi"]] + pv if pv else []
+    actual = line(actual)
+    return {"best": line(best), "actual": actual if len(actual) > 1 else []}
+
+
+def ext_key(ply: int, which: str) -> str:
+    return f"{ply}:{which}"
+
+
+def extend_rows(client, kifu: Kifu, rows: list[dict], plies, cache: dict, ms: int = EXTEND_MS,
+                cancel=lambda: False) -> dict:
+    """指定した手数の読み筋（最善手から・実戦の手から）を LINE_PLIES 手まで伸ばし、cache に入れる。
+
+    cache: ext_key → 指す前の局面からの USI の手順。すでにあるものは読み直さない。失敗したら元の読み筋のまま入れる。
+    """
+    by_ply = {r["ply"]: r for r in rows}
+    for ply in plies:
+        r = by_ply.get(ply)
+        if r is None or cancel():
+            continue
+        try:
+            start = board_after(kifu, ply - 1)[0].sfen()
+        except Exception:
+            continue
+        pv = (r.get("pv") or "").split()
+        for which, line in (("best", (r.get("best_pv") or "").split()),
+                            ("actual", [r["move_usi"]] + pv if pv else [])):
+            k = ext_key(ply, which)
+            if k in cache:
+                continue
+            try:
+                cache[k] = extend_line(client, start, line) if line else []
+            except Exception:
+                cache[k] = line
+    return cache
 
 
 def board_after(kifu: Kifu, ply: int) -> tuple[cshogi.Board, int | None]:

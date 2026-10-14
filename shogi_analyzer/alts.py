@@ -14,7 +14,7 @@ import re
 import cshogi
 
 from .kifu_analysis import THRESHOLDS, Kifu
-from .service import board_after, pv_jp
+from .service import LINE_PLIES, board_after, extend_line, pv_jp
 
 MAX_ALTS = 3        # 1つの印に入れられる読みの数
 MAX_ALT_PLIES = 6   # 1つの読みの長さ（エンジンの解析は 読みの手数 + 1 回）
@@ -80,9 +80,18 @@ def evaluate(client, kifu: Kifu, marks: list[dict], ms: int, cache: dict, cancel
         if k in cache or cancel():
             continue
         try:
-            cache[k] = client.analyze_game(alt_kifu(kifu, ply, line), ms)["rows"]
+            rows = client.analyze_game(alt_kifu(kifu, ply, line), ms)["rows"]
         except Exception as e:  # 失敗は失敗として残す（画面に出す）
             cache[k] = {"error": str(e)}
+            continue
+        if rows and len(rows) == len(line):  # 読みの終わりから先の読み筋が短く途切れていたら、続きを読んで伸ばす
+            pv = (rows[-1].get("pv") or "").split()
+            try:
+                full = extend_line(client, start_sfen(kifu, ply), line + pv, len(line) + LINE_PLIES)
+                rows[-1] = {**rows[-1], "pv": " ".join(full[len(line):])}
+            except Exception:
+                pass  # 伸ばせなくても、元の読み筋のまま使う
+        cache[k] = rows
     return cache
 
 
@@ -109,7 +118,7 @@ def summarize(kifu: Kifu, ply: int, line: list[str], alt_rows, actual_row: dict 
     last = alt_rows[-1]
     final = round(for_mover(last["winrate_sente"]), 3)
     out.update(steps=steps, final_winrate=final, mover=mover,
-               after=pv_jp(board, (last.get("pv") or "").split(), 6))  # 読みの終わりの局面から先の、エンジンの読み筋
+               after=pv_jp(board, (last.get("pv") or "").split(), LINE_PLIES))  # 読みの終わりの局面から先の、エンジンの読み筋
     if actual_row:
         actual = round(for_mover(actual_row["winrate_sente"]), 3)
         diff = round(final - actual, 3)
@@ -163,5 +172,7 @@ def describe(a: dict) -> str:
     bad = [f"{st['move_jp']}（{st['label']}）" for st in a["steps"] if st["label"]]
     if bad:
         s += "。読みの中の悪手候補: " + "、".join(bad)
+    if a.get("after"):
+        s += "。その先のエンジンの読み筋: " + " ".join(a["after"])
     return s
 
