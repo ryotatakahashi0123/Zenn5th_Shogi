@@ -7,15 +7,15 @@ from __future__ import annotations
 
 import cshogi
 
-from .service import move_jp
+from .service import move_jp, to_svg
 
 HAND = "PLNSGBR"  # 持ち駒の並び（cshogi の pieces_in_hand と同じ順。歩 香 桂 銀 金 角 飛）
 FILES, RANKS = "987654321", "abcdefghi"  # 画面の左→右、上→下（先手が手前）
 
 
-def replay(moves: list[str]) -> tuple[cshogi.Board, list[str]]:
-    """入力済みの手順を並べた局面と、日本語の手順。"""
-    board, jp = cshogi.Board(), []
+def replay(moves: list[str], sfen: str = "") -> tuple[cshogi.Board, list[str]]:
+    """入力済みの手順を並べた局面と、日本語の手順。sfen は開始局面（空なら平手）。"""
+    board, jp = (cshogi.Board(sfen) if sfen else cshogi.Board()), []
     for i, u in enumerate(moves, start=1):
         m = board.move_from_usi(u)
         if not m or not board.is_legal(m):
@@ -44,13 +44,13 @@ def choose(board: cshogi.Board, sel: str, sq: str) -> list[str]:
     return sorted(u for u in legal(board) if u[:2] == sel and u[2:4] == sq)
 
 
-def click(moves: list[str], sel: str | None, key: str) -> tuple[list[str], str | None, list[str] | None]:
+def click(moves: list[str], sel: str | None, key: str, sfen: str = "") -> tuple[list[str], str | None, list[str] | None]:
     """マスか持ち駒（key）を押したあとの（手順, 選んでいる駒, 成る・成らないの候補）。
 
     駒を選ぶ → 行き先を押す、の順で1手になる。成る・成らないの両方が指せるときは、手を進めずに候補を返す。
     指せない場所を押したら、選び直しになる（押した場所に動かせる駒があれば、それを選ぶ）。
     """
-    board, _ = replay(moves)
+    board, _ = replay(moves, sfen)
     found = choose(board, sel, key) if sel else []
     if len(found) == 2:
         return moves, sel, found
@@ -69,7 +69,7 @@ def board_svg(board: cshogi.Board, last: int | None = None, sel: str | None = No
         x = GEOM["x"] + (9 - int(sq[0])) * GEOM["cell"]
         y = GEOM["y"] + RANKS.index(sq[1]) * GEOM["cell"]
         return f'<rect x="{x}" y="{y}" width="{GEOM["cell"]}" height="{GEOM["cell"]}" fill="{fill}"/>'
-    head, rest = str(board.to_svg(lastmove=last, scale=2.0)).split(">", 1)
+    head, rest = to_svg(board, last).split(">", 1)
     defs, body = rest.split("</defs>", 1)  # 直前の手の色（cshogi が付ける）より上に重ねる
     marks = "".join(rect(sq, "#b9d98a") for sq in sorted(goals)) + (rect(sel, "#f08a5d") if sel and sel[1] != "*" else "")
     return f'{head}><rect width="100%" height="100%" fill="{background}"/>{defs}</defs>' + _after_last(body, marks)

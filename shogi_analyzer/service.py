@@ -16,6 +16,7 @@ from .kifu_analysis import Kifu, MAX_PLIES, analyze_kifu, validate_kifu, winrate
 
 DEEP_MS = 2000       # 深掘りの思考時間
 DEEP_MULTIPV = 3     # 深掘りで出す候補手の数
+PROMOTED_FILL = "#d0021b"  # 成り駒の色（発案者の指示 2026-10-14。成ったことがひと目で分かるように）
 
 
 def kifu_from_usi(start_sfen: str, moves_usi: list[str]) -> Kifu:
@@ -188,14 +189,30 @@ def board_after(kifu: Kifu, ply: int) -> tuple[cshogi.Board, int | None]:
     return board, (kifu.moves[ply - 1] if ply else None)
 
 
+def red_promoted(svg: str) -> str:
+    """cshogi の図で、成り駒（と・成香・成桂・成銀・馬・龍）の字を赤くする。駒の形は図の先頭（defs）で1回だけ定義されている。"""
+    return re.sub(r'(<g id="(?:black|white)-(?:pro-[a-z]+|horse|dragon)")', rf'\1 fill="{PROMOTED_FILL}"', svg)
+
+
+def to_svg(board: cshogi.Board, lastmove: int | None = None, scale: float = 2.0) -> str:
+    """cshogi の局面図（SVG）に、成り駒の色を付けたもの。"""
+    return red_promoted(str(board.to_svg(lastmove=lastmove, scale=scale)))
+
+
 def board_svg(kifu: Kifu, ply: int, scale: float = 2.0, background: str | None = "#f5deb3") -> str:
     """ply手目を指した後の局面図（SVG）。その手のマスを強調する。0 は開始局面。
 
     cshogi の図は背景が透明なので、暗い画面でも見えるよう盤の色を敷く（印刷用は None で敷かない）。
     """
     board, last = board_after(kifu, ply)
-    svg = str(board.to_svg(lastmove=last, scale=scale))
+    svg = to_svg(board, last, scale)
     if not background:
         return svg
     head, rest = svg.split(">", 1)
+    return f'{head}><rect width="100%" height="100%" fill="{background}"/>{rest}'
+
+
+def sfen_svg(sfen: str, scale: float = 2.0, background: str = "#f5deb3") -> str:
+    """SFEN の局面図（画面用。盤の色を敷き、成り駒は赤）。"""
+    head, rest = to_svg(cshogi.Board(sfen), None, scale).split(">", 1)
     return f'{head}><rect width="100%" height="100%" fill="{background}"/>{rest}'

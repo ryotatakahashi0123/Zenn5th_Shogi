@@ -27,7 +27,7 @@ def _gap():
 
 def test_summarize_counts_only_numbers():
     s = learn.summarize(ROWS, _gap(), "2026-10-13")
-    assert s["counts"] == {"match": 1, "feeling_only": 1, "data_only": 2,
+    assert s["counts"] == {"match": 1, "feeling_only": 1, "data_only": 2, "surprise": 0,
                            "good_match": 1, "good_feeling_only": 0, "good_data_only": 0}
     assert s["tags"] == {"読み抜け": 2, "手拍子": 1} and s["good"] == 1
     # 自分（▲）の悪手候補だけ。9手の対局は 1〜3 序盤、4〜6 中盤、7〜9 終盤

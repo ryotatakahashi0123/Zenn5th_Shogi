@@ -8,6 +8,10 @@
     感覚だけ … 印を付けたが、エンジンでは勝率がほとんど下がっていない
     データだけ … エンジンでは自分の悪手候補だが、悔しかった手の印を付けていない
 
+驚いた手（surprise）… 相手の手に付けた印（発案者の指示 2026-10-14）。自分の手なら「悔しかった手」、相手の手なら
+    「驚いた手（予想外の手）」として扱う。どちらになるかは、比べるときの本人の手番で決める（印は同じ regret の種類で持つ）。
+    エンジンの判定（最善手と同じか、好手候補か、悪手か）を並べるだけで、区分は付けない。
+
 好手（結果のキーは good_ で始まる）:
     一致     … 好手の印を付けた手が、エンジンの最善手と同じ
     感覚だけ … 好手の印を付けたが、エンジンの最善手とは違う
@@ -20,14 +24,24 @@ from __future__ import annotations
 CAUSE_TAGS = ["読み抜け", "形勢判断の誤り", "焦り・早指し", "時間不足", "定跡・形を知らなかった",
               "詰みの見落とし", "相手の好手に気づかなかった", "欲張り", "手拍子", "その他"]
 MARK_KINDS = {"regret": "悔しかった手", "good": "好手"}  # 印の種類。好手には原因を付けない
+SURPRISE = "驚いた手"  # 相手の手に付けた regret の印の呼び名（原因は任意）
 MAX_MARKS = 10    # 1局に付けられる印の数（種類ごと）
 MAX_NOTE = 200    # コメントの文字数
 
 SIDES = {"先手": "▲", "後手": "△"}
 
 
-def clean_mark(ply: int, tags: list[str], note: str, plies: int, kind: str = "regret") -> dict:
-    """入力を検査して印を作る。範囲外の手数・一覧に無い原因・種類は受け付けない。好手の印は原因を持たない。"""
+def kind_label(kind: str, side: str, my_side: str) -> str:
+    """印の呼び名。regret の印は、自分の手なら「悔しかった手」、相手の手なら「驚いた手」。"""
+    return SURPRISE if kind == "regret" and side != my_side else MARK_KINDS[kind]
+
+
+def clean_mark(ply: int, tags: list[str], note: str, plies: int, kind: str = "regret", surprise: bool = False,
+               alts: list[list[str]] = ()) -> dict:
+    """入力を検査して印を作る。範囲外の手数・一覧に無い原因・種類は受け付けない。好手の印は原因を持たない。
+
+    surprise: 相手の手への印（驚いた手）。原因は任意。alts: 迷った別の読み（shogi_analyzer.alts.clean_line で検査済みのもの）。
+    """
     if not 1 <= int(ply) <= plies:
         raise ValueError(f"手数は1〜{plies}で指定してください")
     if kind not in MARK_KINDS:
@@ -36,32 +50,47 @@ def clean_mark(ply: int, tags: list[str], note: str, plies: int, kind: str = "re
     bad = [t for t in tags if t not in CAUSE_TAGS]
     if bad:
         raise ValueError(f"原因の選択肢にありません: {', '.join(bad)}")
-    if kind == "regret" and not tags:
+    if kind == "regret" and not tags and not surprise:
         raise ValueError("原因を1つ以上選んでください")
-    return {"ply": int(ply), "kind": kind, "tags": tags, "note": " ".join((note or "").split())[:MAX_NOTE]}
+    out = {"ply": int(ply), "kind": kind, "tags": tags, "note": " ".join((note or "").split())[:MAX_NOTE]}
+    if alts:
+        out["alts"] = [list(a) for a in alts]
+    return out
 
 
-def compare(rows: list[dict], marks: list[dict], my_side: str) -> dict:
-    """rows: 全手解析の行。marks: clean_mark の結果。my_side: "▲" か "△"（本人の手番）。"""
+def compare(rows: list[dict], marks: list[dict], my_side: str, alt_summaries: dict | None = None) -> dict:
+    """rows: 全手解析の行。marks: clean_mark の結果。my_side: "▲" か "△"（本人の手番）。
+
+    alt_summaries: 手数 → 迷った別の読みの評価（shogi_analyzer.alts.summaries）。あれば印の項目の alts に入れる。
+    """
     by_ply = {r["ply"]: r for r in rows}
-    marked = {m["ply"]: m for m in marks if m.get("kind", "regret") == "regret"}
+    regrets = {m["ply"]: m for m in marks if m.get("kind", "regret") == "regret"}
+    marked = {p: m for p, m in regrets.items() if p in by_ply and by_ply[p]["side"] == my_side}
+    surprised = {p: m for p, m in regrets.items() if p in by_ply and by_ply[p]["side"] != my_side}
     good = {m["ply"]: m for m in marks if m.get("kind") == "good"}
-    out = {"my_side": my_side, "match": [], "feeling_only": [], "data_only": [],
+    alt_summaries = alt_summaries or {}
+    out = {"my_side": my_side, "match": [], "feeling_only": [], "data_only": [], "surprise": [],
            "good_match": [], "good_feeling_only": []}
-    for ply in sorted(marked):
-        r = by_ply.get(ply)
-        if r is None:  # 解析の行が無い手（終局後など）は比べられない
-            continue
-        item = {**_engine(r), "tags": marked[ply]["tags"], "note": marked[ply]["note"]}
-        out["match" if r["label"] else "feeling_only"].append(item)
+
+    def item(r, m):
+        it = {**_engine(r), "tags": m["tags"], "note": m["note"]}
+        if alt_summaries.get(r["ply"]):
+            it["alts"] = alt_summaries[r["ply"]]
+        return it
+    for ply in sorted(marked):  # 解析の行が無い手（終局後など）は比べられない
+        r = by_ply[ply]
+        out["match" if r["label"] else "feeling_only"].append(item(r, marked[ply]))
+    out["surprise"] = [item(by_ply[p], surprised[p]) for p in sorted(surprised)]
     out["data_only"] = [_engine(r) for r in rows
                         if r["label"] and r["side"] == my_side and r["ply"] not in marked]
     for ply in sorted(good):
         r = by_ply.get(ply)
         if r is None:
             continue
-        item = {**_engine(r), "note": good[ply]["note"]}
-        out["good_match" if item["was_best"] else "good_feeling_only"].append(item)
+        it = {**_engine(r), "note": good[ply]["note"]}
+        if alt_summaries.get(ply):
+            it["alts"] = alt_summaries[ply]
+        out["good_match" if it["was_best"] else "good_feeling_only"].append(it)
     cands = [_engine(r) for r in rows if r.get("good")]
     out["good_data_only"] = [m for m in cands if m["side"] == my_side and m["ply"] not in good]
     out["good_opponent"] = [m for m in cands if m["side"] != my_side and m["ply"] not in good]
