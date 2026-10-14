@@ -1,27 +1,37 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" width="960" height="540" font-family="'BIZ UDPGothic','Hiragino Kaku Gothic ProN','Yu Gothic',Meiryo,'Noto Sans JP',sans-serif" font-size="15">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" width="960" height="540" font-family="'BIZ UDPGothic','BIZ UDGothic','Hiragino Kaku Gothic ProN','Yu Gothic',Meiryo,'Noto Sans JP',sans-serif" font-size="15">
   <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#333"/></marker></defs>
   <rect width="960" height="540" fill="#fff"/>
   <text x="30" y="36" font-size="22" font-weight="bold">ふりかえり将棋　システム構成</text>
-  <rect x="30" y="200" width="150" height="90" rx="8" fill="#f3f3f3" stroke="#333"/>
-  <text x="105" y="240" text-anchor="middle" font-weight="bold">利用者の</text><text x="105" y="262" text-anchor="middle" font-weight="bold">ブラウザ</text>
-  <rect x="250" y="70" width="330" height="440" rx="10" fill="#eef5ff" stroke="#3b6fb6" stroke-dasharray="6 4"/>
-  <text x="266" y="94" fill="#3b6fb6" font-weight="bold">Cloud Run</text>
-  <rect x="275" y="110" width="280" height="190" rx="8" fill="#fff" stroke="#333"/>
-  <text x="415" y="138" text-anchor="middle" font-weight="bold">shogi-web（公開）</text>
-  <text x="290" y="166">・Streamlit の画面</text><text x="290" y="188">・ADK エージェント（AIコーチ）</text><text x="290" y="210">・印とエンジン判定の突き合わせ</text><text x="290" y="232">・ふりかえりノート（PDF）</text><text x="290" y="254">・ログイン（ハッシュで照合）</text><text x="290" y="276">・裏で進む 解析→ふりかえり→保存</text>
-  <rect x="275" y="370" width="280" height="115" rx="8" fill="#fff" stroke="#333"/>
-  <text x="415" y="398" text-anchor="middle" font-weight="bold">shogi-engine（非公開）</text>
-  <text x="290" y="424">・FastAPI</text><text x="290" y="446">・やねうら王 + 水匠5</text><text x="290" y="468">・全手解析、深掘り、手の比較</text>
-  <rect x="680" y="90" width="250" height="90" rx="8" fill="#fff7e6" stroke="#333"/>
-  <text x="805" y="124" text-anchor="middle" font-weight="bold">Gemini（Vertex AI）</text><text x="805" y="150" text-anchor="middle">道具の結果から文章を書く</text>
-  <rect x="680" y="215" width="250" height="120" rx="8" fill="#fff7e6" stroke="#333"/>
-  <text x="805" y="245" text-anchor="middle" font-weight="bold">Cloud Storage</text><text x="695" y="272">・棋譜と結果（30日で削除）</text><text x="695" y="294">・利用者、設定</text><text x="695" y="316">・保存は本人が同意した対局だけ</text>
-  <rect x="680" y="370" width="250" height="90" rx="8" fill="#fff7e6" stroke="#333"/>
-  <text x="805" y="404" text-anchor="middle" font-weight="bold">Cloud Logging</text><text x="805" y="430" text-anchor="middle">道具の開始・終了・エラーの記録</text>
+  <rect x="20" y="215" width="130" height="90" rx="8" fill="#f3f3f3" stroke="#333"/>
+  <text x="85" y="255" text-anchor="middle" font-weight="bold">利用者の</text><text x="85" y="277" text-anchor="middle" font-weight="bold">ブラウザ</text>
+  <rect x="220" y="56" width="420" height="468" rx="10" fill="#eef5ff" stroke="#3b6fb6" stroke-dasharray="6 4"/>
+  <text x="236" y="78" fill="#3b6fb6" font-weight="bold">Cloud Run</text>
+  <rect x="240" y="88" width="380" height="250" rx="8" fill="#fff" stroke="#333"/>
+  <text x="430" y="114" text-anchor="middle" font-weight="bold">shogi-web（公開）</text>
+  <text x="256" y="140">・Streamlit の画面、ログイン（ハッシュで照合）</text>
+  <text x="256" y="162">・印とエンジン判定の突き合わせ（決まった規則）</text>
+  <text x="256" y="184">・ふりかえりノート（PDF）</text>
+  <rect x="252" y="198" width="174" height="128" rx="6" fill="#f4f9f1" stroke="#4a7c3a"/>
+  <text x="339" y="220" text-anchor="middle" font-size="13" fill="#4a7c3a" font-weight="bold">ADK エージェント1</text>
+  <text x="339" y="242" text-anchor="middle" font-weight="bold">AIコーチ</text>
+  <text x="262" y="266" font-size="13">・5つの道具でエンジン</text><text x="262" y="286" font-size="13">・勝負どころを調べて講評</text><text x="262" y="306" font-size="13">・質問に答える</text>
+  <rect x="434" y="198" width="174" height="128" rx="6" fill="#f4f9f1" stroke="#4a7c3a"/>
+  <text x="521" y="220" text-anchor="middle" font-size="13" fill="#4a7c3a" font-weight="bold">ADK エージェント2</text>
+  <text x="521" y="242" text-anchor="middle" font-weight="bold">傾向まとめ</text>
+  <text x="444" y="266" font-size="13">・対局の保存ごとに自動</text><text x="444" y="286" font-size="13">・道具は持たない</text><text x="444" y="306" font-size="13">・所感は規則で検証</text>
+  <rect x="240" y="400" width="380" height="110" rx="8" fill="#fff" stroke="#333"/>
+  <text x="430" y="426" text-anchor="middle" font-weight="bold">shogi-engine（非公開）</text>
+  <text x="256" y="452">・FastAPI、やねうら王 + 水匠5</text><text x="256" y="474">・全手解析、深掘り、手の比較</text><text x="256" y="496">・迷った読みの評価、読み筋の延長</text>
+  <rect x="690" y="88" width="245" height="95" rx="8" fill="#fff7e6" stroke="#333"/>
+  <text x="812" y="120" text-anchor="middle" font-weight="bold">Gemini（Vertex AI）</text><text x="812" y="146" text-anchor="middle" font-size="14">2つのエージェントが使う</text><text x="812" y="166" text-anchor="middle" font-size="14">（サービスアカウントで呼ぶ）</text>
+  <rect x="690" y="215" width="245" height="135" rx="8" fill="#fff7e6" stroke="#333"/>
+  <text x="812" y="244" text-anchor="middle" font-weight="bold">Cloud Storage</text><text x="702" y="270" font-size="14">・棋譜、結果、傾向まとめ</text><text x="702" y="291" font-size="14">　（30日で自動削除）</text><text x="702" y="312" font-size="14">・利用者、設定</text><text x="702" y="333" font-size="14">・保存は本人が同意したときだけ</text>
+  <rect x="690" y="400" width="245" height="95" rx="8" fill="#fff7e6" stroke="#333"/>
+  <text x="812" y="432" text-anchor="middle" font-weight="bold">Cloud Logging</text><text x="812" y="458" text-anchor="middle" font-size="14">道具の開始・終了・</text><text x="812" y="478" text-anchor="middle" font-size="14">所要時間・エラーの記録</text>
   <g stroke="#333" stroke-width="1.6" fill="none" marker-end="url(#a)">
-    <path d="M180 245 L273 215"/><path d="M415 300 L415 368"/><path d="M555 150 L678 135"/><path d="M555 225 L678 265"/><path d="M555 285 L678 400"/>
+    <path d="M150 260 L238 230"/><path d="M430 338 L430 398"/><path d="M620 132 L688 132"/><path d="M620 270 L688 280"/><path d="M620 320 L688 430"/>
   </g>
-  <text x="186" y="212" font-size="13">HTTPS</text><text x="186" y="268" font-size="13">ログイン</text>
-  <text x="425" y="330" font-size="13">IAM 認証（ID トークン）</text><text x="425" y="348" font-size="13">shogi-web だけが呼べる</text>
-  <text x="590" y="122" font-size="13">サービス</text><text x="590" y="138" font-size="13">アカウント</text>
+  <text x="158" y="226" font-size="13">HTTPS</text><text x="158" y="284" font-size="13">ログイン</text>
+  <text x="440" y="362" font-size="13">IAM 認証（ID トークン）</text><text x="440" y="380" font-size="13">shogi-web だけが呼べる</text>
+  
 </svg>
