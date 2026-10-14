@@ -81,3 +81,25 @@ def test_extend_rows_and_lines_jp():
     n = FakeClient()
     extend_rows(n, k, rows, [15], cache)
     assert n.calls == 0  # 伸ばした読み筋は読み直さない
+
+
+def test_line_positions_for_popup():
+    # 15手目（▲６六角）の直前の局面から: 最善手 ▲３四飛 △７六飛、実戦 ▲６六角 △８九飛成
+    row = {"ply": 15, "move_usi": cshogi.move_to_usi(KIFU.moves[14]), "best_pv": "2d3d 8f7f", "pv": "8f8i+"}
+    pos = service.line_positions(KIFU, row)
+    before = service.board_after(KIFU, 14)[0].sfen()
+    assert [s["move_jp"] for s in pos["best"]] == [None, "▲３四飛", "△７六飛"]
+    assert pos["best"][0]["sfen"] == before and pos["best"][1]["before"] == before
+    assert pos["best"][0]["move_usi"] == cshogi.move_to_usi(KIFU.moves[13])  # 先頭は直前の実戦の手に色を付ける
+    assert [s["move_jp"] for s in pos["actual"]] == [None, "▲６六角", "△８九飛成"]
+    b = cshogi.Board(before)
+    b.push_usi("2d3d")
+    assert pos["best"][1]["sfen"] == b.sfen()
+    # 伸ばした読み筋があればそれを使う。指せない手が出たらそこで打ち切る
+    ext = {ext_key(15, "best"): ["2d3d", "8f7f", "9i9i"]}
+    assert len(service.line_positions(KIFU, row, ext)["best"]) == 3
+    # 実戦の手だけ（続きが無い）なら、実戦の読み筋は出さない（lines_jp と同じ）
+    assert service.line_positions(KIFU, {**row, "pv": ""})["actual"] == []
+    # 色を付けた図は、付けない図と違う
+    s = pos["best"][1]
+    assert service.position_svg(s["sfen"], s["move_usi"], s["before"]) != service.position_svg(s["sfen"])

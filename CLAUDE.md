@@ -164,6 +164,9 @@
 - 以前の種類 `regret`（保存した対局）は、自分の手なら bad、相手の手なら other として読む（`regret.norm_kind`。`open_game` でも読み替える）
 - 解析結果の画面は「ラベルごとのふりかえり」の6つのタブ（`regret.sections`）。タブごとに区分の数、表（行を押すと局面図）、
   印を付けた手と自分の悪手候補（`report.CARD_GROUPS`）の局面とその後の読み筋（最善手から・実戦の手から、最大12手）と迷った読みの評価
+- **読み筋のポップアップ**（発案者の指示 2026-10-14）: タブの各手と、局面図の下の「読み筋を盤で見る」で `app.line_dialog`（`st.dialog`）を開く。
+  最善手から・実戦の手からを切り替え、1手ずつ盤で送る。局面の並びは `service.line_positions`（エンジンは呼ばない。伸ばした読み筋があれば使う）、
+  図は `service.position_svg`（手に色を付けるため、指す前の SFEN も渡す）。開いている手は `line_pop`、閉じると `close_lines` で消す
 - ノートは、ラベルごとの数 → 好手以外の4ラベルの表 → 形勢グラフ → ラベルごとの局面図 → ラベルごとの回答 → 好手の2ラベルの表
 - AIコーチの `regret_gap` は `sections`（ラベルごとの groups）を返し、講評は「#### 自分の手・悪手だと思った」のようにラベルごとに書かせる
 - 集計（`learn.KINDS = regret.GROUP_KEYS`）の原因・段階・「自分で気づけた数」は、自分の手の「悪手だと思った」だけで数える
@@ -222,7 +225,7 @@
 
 ```bash
 cd ~/zenn5th_shogi && . .venv/bin/activate
-python -m pytest -q                                  # 51件通ること
+python -m pytest -q                                  # 52件通ること
 export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:-zenn5thshogi}"   # 無いとAIコーチが出ない（下の注意）
 streamlit run app.py --server.port=8080 --server.enableCORS=false --server.enableXsrfProtection=false
 ```
