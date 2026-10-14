@@ -20,9 +20,9 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Flowable, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table
 
-from . import regret
+from . import alts as alts_mod, regret, trend as trend_mod
 from .kifu_analysis import GOOD_GAP, Kifu
-from .service import board_after, board_svg, lines_jp
+from .service import PROMOTED_FILL, board_after, board_svg, lines_jp, to_svg
 
 FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
 FONT, FONT_B = "BIZUDGothic", "BIZUDGothic-Bold"
@@ -67,7 +67,8 @@ def collect(kifu: Kifu, rows: list[dict], gap: dict, title: str = "", coach_text
         lines = lines_jp(kifu, r) if "move_usi" in r else {"best": [], "actual": []}
         return {**m, "kind": label, "best_usi": r["best_before_usi"],
                 "best_line": " ".join(lines["best"]), "actual_line": " ".join(lines["actual"])}
-    items = sorted((item(m, label) for key, label in KINDS for m in gap[key]), key=lambda m: m["ply"])
+    items = sorted([*(item(m, label) for key, label in KINDS for m in gap[key]),
+                    *(item(m, regret.SURPRISE) for m in gap.get("surprise", []))], key=lambda m: m["ply"])
     return {
         "title": title, "created": created, "plies": len(kifu.moves),
         "names": [kifu.names[0] or "先手", kifu.names[1] or "後手"],
@@ -206,8 +207,10 @@ def _legend_html() -> str:
 
 
 def _facts(m: dict) -> list[tuple[str, str]]:
-    """局面ごとの欄に出す項目（見出し, 値）。エンジンの最善手はここに出さず、回答に回す。"""
+    """局面ごとの欄に出す項目（見出し, 値）。エンジンの最善手と、迷った読みの評価はここに出さず、回答に回す。"""
     out = [("エンジンの判定", f'{verdict(m)}（勝率の下落 {pct(m["winrate_drop"])}）')]
+    if m.get("alts"):
+        out.append(("迷った別の読み（本人の入力）", " / ".join(" ".join(a.get("line_jp", [])) for a in m["alts"])))
     if m.get("tags"):
         out.append(("原因（本人の入力）", "、".join(m["tags"])))
     if m.get("note"):
@@ -218,10 +221,11 @@ def _facts(m: dict) -> list[tuple[str, str]]:
 def _answer_facts(m: dict) -> list[tuple[str, str]]:
     actual = f'{m["side"]}{m["move_jp"]}（{verdict(m)}、勝率の下落 {pct(m["winrate_drop"])}）'
     best_line = [("最善手からの読み筋", m["best_line"])] if m.get("best_line") else []
+    alt = [("迷った別の読み", alts_mod.describe(a)) for a in m.get("alts", [])]
     if m["was_best"]:
-        return [("エンジンの最善手", f'{m["side"]}{m["best_before_jp"]}（実戦の手と同じ）'), *best_line]
+        return [("エンジンの最善手", f'{m["side"]}{m["best_before_jp"]}（実戦の手と同じ）'), *best_line, *alt]
     actual_line = [("実戦の手からの読み筋", m["actual_line"])] if m.get("actual_line") else []
-    return [("エンジンの最善手", m["side"] + m["best_before_jp"]), *best_line, ("実戦の手", actual), *actual_line]
+    return [("エンジンの最善手", m["side"] + m["best_before_jp"]), *best_line, ("実戦の手", actual), *actual_line, *alt]
 
 
 def answer_board(kifu: Kifu, m: dict) -> tuple[cshogi.Board, int | None]:
@@ -268,7 +272,7 @@ def to_html(d: dict, kifu: Kifu) -> str:
         o.append(f"<h2 class='newpage'>回答（エンジンの最善手）</h2><p class='note'>{ANSWER_NOTE}</p>")
     for m in d["items"]:
         board, mv = answer_board(kifu, m)
-        o.append(f'<div class="card">{board.to_svg(lastmove=mv, scale=1.4)}<div class="txt">'
+        o.append(f'<div class="card">{to_svg(board, mv, 1.4)}<div class="txt">'
                  f'<h3>{m["ply"]}手目の回答<span class="kind">{m["kind"]}</span></h3>')
         o += [f"<p><b>{k}</b>: {esc(v)}</p>" for k, v in _answer_facts(m)]
         o.append("</div></div>")
@@ -374,6 +378,8 @@ class BoardDiagram(Flowable):
             cv.translate((8 - f) * c + c / 2, top - r * c - c / 2)
             if p >= 16:  # 後手の駒は逆さに描く
                 cv.rotate(180)
+            if p % 16 >= 9:  # 成り駒は赤（白黒で印刷すると灰色になる）
+                cv.setFillColor(colors.HexColor(PROMOTED_FILL))
             cv.drawCentredString(0, -fs * 0.36, cshogi.PIECE_JAPANESE_SYMBOLS[p % 16])
             cv.restoreState()
         cv.setFont(FONT, c * 0.5)
@@ -526,6 +532,86 @@ def to_pdf(d: dict, kifu: Kifu) -> bytes:
     def footer(cv, doc_):
         cv.setFont(FONT, 8)
         cv.drawCentredString(A4[0] / 2, 9 * mm, f"ふりかえり将棋　{doc_.page}")
+
+    doc.build(s, onFirstPage=footer, onLaterPages=footer)
+    return buf.getvalue()
+
+
+# ---------------- 傾向まとめ（複数の対局。shogi_analyzer.trend.collect の内容） ----------------
+
+TREND_TITLE = "大会に向けた傾向まとめ"
+TREND_FACT_NOTE = "保存した対局を、決まった規則で数えた結果です（AIの判断ではありません）。勝率はエンジンによる参考値です。"
+TREND_AI_NOTE = ("ここはAI（Gemini）が書いた所感です。上の記録にある数だけを使うよう指示し、記録に無い数字を含む行は"
+                 "取り除いています。")
+TREND_EX_NOTE = ("局面例は、決まった規則で選んでいます（種類ごとに、勝率の下落などがいちばん大きいもの）。"
+                 "図はその手を指す直前の局面です。赤い字は成り駒です。")
+
+
+def trend_html(d: dict) -> str:
+    """傾向まとめの印刷用ページ。AIの文章は文字として埋め込み、HTMLとして解釈させない。"""
+    o = ['<!doctype html><html lang="ja"><head><meta charset="utf-8">',
+         '<meta name="viewport" content="width=device-width, initial-scale=1">',
+         f"<title>{TREND_TITLE}</title><style>{CSS}</style></head><body>",
+         '<div class="bar"><button onclick="window.print()">印刷する</button>'
+         "<span>印刷画面で用紙サイズ A4 を選んでください（3ページ以内）。</span></div>",
+         f"<h1>{TREND_TITLE}</h1><p>{esc(d['created'])}　保存した対局 {d['games']}局</p>",
+         "<h2>記録から言えること</h2><ul>", *(f"<li>{esc(f)}</li>" for f in d["facts"]), "</ul>",
+         f"<p class='note'>{TREND_FACT_NOTE}</p>", "<h2>AIの所感</h2>"]
+    if d["ai"]:
+        o += ["<ul>", *(f"<li>{esc(b)}</li>" for b in d["ai"]), "</ul>", f"<p class='note'>{TREND_AI_NOTE}</p>"]
+    else:
+        o.append(f"<p class='note'>AIの所感はありません。{esc(d.get('ai_error', ''))}</p>")
+    for i, e in enumerate(d["examples"]):
+        if i % 2 == 0:
+            o.append(f"<h2 class='newpage'>局面例</h2><p class='note'>{TREND_EX_NOTE}</p>" if i == 0 else
+                     "<div class='newpage'></div>")
+        board = cshogi.Board(e["sfen"])
+        o.append(f'<div class="card">{to_svg(board, None, 1.4)}<div class="txt"><h3>{esc(trend_mod.example_title(e))}</h3>')
+        o += [f"<p><b>{k}</b>: {esc(v)}</p>" for k, v in trend_mod.example_text(e)]
+        o.append(f'<div class="memo">{MEMO}<i></i><i></i></div></div></div>')
+    return "".join(o) + "</body></html>"
+
+
+def trend_pdf(d: dict) -> bytes:
+    """傾向まとめのPDF（A4縦、3ページ以内）。1ページ目に記録とAIの所感、2・3ページ目に局面例を2つずつ。"""
+    _fonts()
+    base = dict(fontName=FONT, wordWrap="CJK", textColor=colors.black)
+    body = ParagraphStyle("body", fontSize=10, leading=15, **base)
+    small = ParagraphStyle("small", fontSize=8, leading=11.5, **base)
+    h1 = ParagraphStyle("h1", fontSize=17, leading=23, **{**base, "fontName": FONT_B})
+    h2 = ParagraphStyle("h2", fontSize=13, leading=18, spaceBefore=10, spaceAfter=4, **{**base, "fontName": FONT_B})
+    h3 = ParagraphStyle("h3", fontSize=10.5, leading=14, spaceAfter=2, **{**base, "fontName": FONT_B})
+    bullet = ParagraphStyle("bullet", parent=body, leftIndent=12, firstLineIndent=-10)
+    P = lambda text, style=body: Paragraph(esc(_safe(text)), style)
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm, topMargin=14 * mm,
+                            bottomMargin=16 * mm, title=TREND_TITLE, author="ふりかえり将棋")
+    W = doc.width
+    rule = lambda: Table([[""]], colWidths=[W], rowHeights=[1], style=[("LINEABOVE", (0, 0), (-1, 0), 1.2, colors.black)])
+    section = lambda text: [P(text, h2), rule(), Spacer(1, 4)]
+    s: list = [P(TREND_TITLE, h1), P(f"{d['created']}　保存した対局 {d['games']}局"), *section("記録から言えること")]
+    s += [P("・" + f, bullet) for f in d["facts"]] + [Spacer(1, 3), P(TREND_FACT_NOTE, small), *section("AIの所感")]
+    s += ([P("・" + b, bullet) for b in d["ai"]] + [Spacer(1, 3), P(TREND_AI_NOTE, small)] if d["ai"] else
+          [P("AIの所感はありません。" + d.get("ai_error", ""), small)])
+    card = [("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8), ("LINEABOVE", (0, 0), (-1, 0), 0.5, colors.Color(0.5, 0.5, 0.5))]
+    for i, e in enumerate(d["examples"]):
+        if i % 2 == 0:
+            s.append(PageBreak())
+            if i == 0:
+                s += [*section("局面例"), P(TREND_EX_NOTE, small), Spacer(1, 4)]
+        diagram = BoardDiagram(cshogi.Board(e["sfen"]))
+        tw = W - diagram.width - 6 * mm
+        text = [P(trend_mod.example_title(e), h3)] + [Paragraph(f"<b>{k}</b>: {esc(_safe(v))}", body)
+                                                      for k, v in trend_mod.example_text(e)]
+        text += [Spacer(1, 6), P(MEMO, small), Table([[""], [""]], colWidths=[tw], rowHeights=[8 * mm] * 2,
+                                                     style=[("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.Color(0.5, 0.5, 0.5))])]
+        s.append(Table([[diagram, text]], colWidths=[diagram.width + 6 * mm, tw], style=card))
+
+    def footer(cv, doc_):
+        cv.setFont(FONT, 8)
+        cv.drawCentredString(A4[0] / 2, 9 * mm, f"ふりかえり将棋　{TREND_TITLE}　{doc_.page}")
 
     doc.build(s, onFirstPage=footer, onLaterPages=footer)
     return buf.getvalue()

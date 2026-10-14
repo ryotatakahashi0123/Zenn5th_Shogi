@@ -126,6 +126,8 @@ def regret_gap(tool_context: ToolContext) -> dict:
         match: 印を付けた手が、エンジンでも悪手・疑問手・緩手だったもの。
         feeling_only: 印を付けたが、エンジンでは勝率がほとんど下がっていないもの。
         data_only: エンジンでは本人の悪手候補だが、悔しかった手の印を付けていないもの。
+        surprise: 本人が「驚いた（予想外だった）」と印を付けた相手の手と、エンジンの判定。
+        各項目の alt_lines は、本人が迷った別の読みと、エンジンでの評価（読みの終わりの勝率を、実戦の手の後と比べたもの）。
         good_match: 本人が好手の印を付けた手が、エンジンの最善手と同じだったもの。
         good_feeling_only: 本人が好手の印を付けたが、エンジンの最善手とは違ったもの。
         good_data_only: エンジンでは本人の好手候補だが、好手の印を付けていないもの。
@@ -149,10 +151,27 @@ def summarize_regret(gap: dict) -> dict:
             out["tags"] = m["tags"]
         if "note" in m:
             out["user_note"] = m["note"]
+        if m.get("alts"):
+            out["alt_lines"] = [_alt(a) for a in m["alts"]]
         return out
-    keys = ("match", "feeling_only", "data_only", "good_match", "good_feeling_only", "good_data_only", "good_opponent")
-    marked = any(gap.get(k) for k in ("match", "feeling_only", "good_match", "good_feeling_only"))
+    keys = ("match", "feeling_only", "data_only", "surprise", "good_match", "good_feeling_only", "good_data_only",
+            "good_opponent")
+    marked = any(gap.get(k) for k in ("match", "feeling_only", "surprise", "good_match", "good_feeling_only"))
     return {"marked": marked, "my_side": gap["my_side"], **{k: [item(m) for m in gap.get(k, [])] for k in keys}}
+
+
+def _alt(a: dict) -> dict:
+    """迷った別の読みの評価を、モデルに渡す形にする（数はエンジンの評価の値）。"""
+    out = {"line": " ".join(a.get("line_jp", []))}
+    if a.get("pending") or a.get("error"):
+        return {**out, "evaluated": False}
+    out.update(evaluated=True, final_winrate_for_mover=_pct(a["final_winrate"]), first_move_is_engine_best=a["first_best"],
+               engine_best_first_move=a["first_best_jp"],
+               bad_moves_in_line=[f"{st['move_jp']}（{st['label']}）" for st in a["steps"] if st["label"]],
+               engine_line_after=" ".join(a.get("after", [])))
+    if "verdict" in a:
+        out.update(actual_winrate_for_mover=_pct(a["actual_winrate"]), compared_with_actual=a["verdict"])
+    return out
 
 
 def past_tendencies(tool_context: ToolContext) -> dict:
@@ -168,6 +187,9 @@ def past_tendencies(tool_context: ToolContext) -> dict:
         bad_moves: 本人の悪手候補の合計。bad_by_phase は対局の手数を3等分した序盤・中盤・終盤ごと、bad_by_label は判定ごとの数。
         bad_noticed: 本人の悪手候補のうち、本人が悔しかった手の印を付けていた数。
         good_moves: 本人の好手候補の合計。
+        regret_by_phase: 悔しかった手の印を付けた段階ごとの数。surprise: 驚いた相手の手の数（total）と、そのうち
+        エンジンの最善手と同じだった数（best）・相手の悪手候補だった数（bad）。alts: 迷った別の読みが実戦の手と比べて
+        良い / 同じくらい / 悪い だった本数。
     """
     return tool_context.state.get("history") or {"games": 0}
 

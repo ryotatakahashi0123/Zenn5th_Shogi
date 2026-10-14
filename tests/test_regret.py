@@ -5,7 +5,7 @@
 import pytest
 
 from shogi_analyzer.kifu_analysis import GOOD_GAP, is_good
-from shogi_analyzer.regret import MAX_NOTE, clean_mark, compare, verdict
+from shogi_analyzer.regret import MAX_NOTE, SURPRISE, clean_mark, compare, kind_label, verdict
 
 
 def _row(ply, label="", drop=0.0, move="7g7f", best="7g7f"):
@@ -27,10 +27,28 @@ def test_three_groups():
 
 
 def test_side_and_opponent_move():
-    # 後手として見る。相手(▲)の手にも印を付けられる
-    g = compare(ROWS, [clean_mark(3, ["相手の好手に気づかなかった"], "", 6)], "△")
-    assert [m["ply"] for m in g["match"]] == [3]
-    assert [m["ply"] for m in g["data_only"]] == [2]
+    # 後手として見る。相手(▲)の手への印は「驚いた手」で、悔しかった手の区分には入らない（2026-10-14 の変更。以前は一致）
+    g = compare(ROWS, [clean_mark(3, ["相手の好手に気づかなかった"], "", 6), clean_mark(2, ["読み抜け"], "", 6)], "△")
+    assert [m["ply"] for m in g["surprise"]] == [3] and g["surprise"][0]["label"] == "悪手"
+    assert [m["ply"] for m in g["match"]] == [2] and g["data_only"] == []
+    # 手番を変えると、同じ印の呼び名と区分が入れ替わる
+    g2 = compare(ROWS, [clean_mark(3, ["読み抜け"], "", 6)], "▲")
+    assert [m["ply"] for m in g2["match"]] == [3] and g2["surprise"] == []
+    assert kind_label("regret", "▲", "△") == SURPRISE and kind_label("regret", "△", "△") == "悔しかった手"
+    assert kind_label("good", "▲", "△") == "好手"
+
+
+def test_surprise_mark_input():
+    # 驚いた手は原因が任意。悔しかった手は原因が必須のまま
+    assert clean_mark(2, [], "まさか", 6, surprise=True)["tags"] == []
+    with pytest.raises(ValueError):
+        clean_mark(2, [], "", 6)
+    # 迷った別の読みを持てる。無ければ項目を作らない（古い印と同じ形）
+    assert clean_mark(1, ["その他"], "", 6, alts=[["2g2f", "8c8d"]])["alts"] == [["2g2f", "8c8d"]]
+    assert "alts" not in clean_mark(1, ["その他"], "", 6)
+    g = compare(ROWS, [clean_mark(3, ["読み抜け"], "", 6, alts=[["2g2f"]])], "▲",
+                {3: [{"line": ["2g2f"], "final_winrate": 0.6}]})
+    assert g["match"][0]["alts"][0]["final_winrate"] == 0.6
 
 
 def test_no_marks_and_missing_row():
@@ -67,7 +85,8 @@ def test_good_marks():
     assert [m["ply"] for m in g["good_data_only"]] == [1]
     assert [m["ply"] for m in g["good_opponent"]] == [4, 6]
     # 好手の印は、悔しかった手の突き合わせに入らない。好手だと思った悪手は「データだけ」に残る
-    assert [m["ply"] for m in g["match"]] == [2] and [m["ply"] for m in g["data_only"]] == [3]
+    # 相手(△)の2手目への印は「驚いた手」（2026-10-14 の変更。以前は一致）
+    assert g["match"] == [] and [m["ply"] for m in g["surprise"]] == [2] and [m["ply"] for m in g["data_only"]] == [3]
     assert [verdict(r) for r in rows[:5]] == ["好手候補", "緩手", "悪手", "好手候補", "最善手と同じ"]
     assert verdict(g["good_feeling_only"][0]) == "悪手"
     # 好手の印を付けた好手候補は「データだけ」から外れる

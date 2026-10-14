@@ -37,12 +37,12 @@
 | パス | 内容 |
 |---|---|
 | `app.py` | Streamlit 画面。棋譜アップロード → 悔しかった手の印（局面図・手送り）→ 完了後に、ずれの表示、形勢グラフ、悪手候補、ふりかえりノート（PDF・印刷用ページ）、AIコーチ |
-| `shogi_analyzer/` | 外部サービスに依存しない解析。`kifu_analysis.py`（読み込み・全手解析・勝率変換）、`service.py`（深掘り・比較、画面用の指し手一覧と局面図）、`usi_engine.py`、`regret.py`（印とエンジン判定の突き合わせ。純粋関数）、`report.py`（ふりかえりノートのPDFと印刷用HTML。エンジンもLLMも呼ばない） |
+| `shogi_analyzer/` | 外部サービスに依存しない解析。`alts.py`（迷った別の読み）、`trend.py`（傾向まとめの規則と、AIの文の検証）、`kifu_analysis.py`（読み込み・全手解析・勝率変換）、`service.py`（深掘り・比較、画面用の指し手一覧と局面図）、`usi_engine.py`、`regret.py`（印とエンジン判定の突き合わせ。純粋関数）、`report.py`（ふりかえりノートのPDFと印刷用HTML。エンジンもLLMも呼ばない） |
 | `assets/fonts/` | PDFに埋め込む BIZ UDゴシック（SIL OFL 1.1）。`web.Dockerfile` でコピーする |
-| `shogi_coach/` | `agent.py`（指示文・ログ）、`tools.py`（エージェントの道具）、`session.py`、`engine_client.py`、`storage.py` |
+| `shogi_coach/` | `agent.py`（指示文・ログ）、`trend.py`（傾向まとめを Gemini で書いて保存）、`tools.py`（エージェントの道具）、`session.py`、`engine_client.py`、`storage.py` |
 | `engine_service/` | shogi-engine（FastAPI）。本番では非公開で、web のサービスアカウントだけが呼べる |
 | `deploy/setup.sh`, `cloudbuild.yaml`, `web.Dockerfile` | Cloud Run へのデプロイ（shogi-web 公開 / shogi-engine 非公開） |
-| `tests/` | `test_regret.py`、`test_board_view.py`、`test_report.py`、`test_kifu_input.py`、`test_entry.py`（エンジン不要）、`test_engine_api.py` と `test_agent_flow.py`（`./engine` が必要。Gemini は台本モデルで代用） |
+| `tests/` | `test_alts_trend.py`（読み・傾向まとめ・成り駒。Gemini は台本モデル）、`test_regret.py`、`test_board_view.py`、`test_report.py`、`test_kifu_input.py`、`test_entry.py`（エンジン不要）、`test_engine_api.py` と `test_agent_flow.py`（`./engine` が必要。Gemini は台本モデルで代用） |
 
 判定: 評価値 cp を先手勝率 `1/(1+exp(-cp/600))` に直し、指した側の勝率が 20%以上下がれば「悪手」、10%「疑問手」、5%「緩手」。
 最善手と同じ手には付けない。
@@ -174,11 +174,28 @@
 - 原因の選択肢（`regret.CAUSE_TAGS`）: 読み抜け / 形勢判断の誤り / 焦り・早指し / 時間不足 / 定跡・形を知らなかった /
   詰みの見落とし / 相手の好手に気づかなかった / 欲張り / 手拍子 / その他。将棋として妥当かは発案者が確認する（未確認）
 
+### 驚いた手・迷った別の読み・傾向まとめ・成り駒の色（発案者の指示 2026-10-14）
+
+- **驚いた手**: regret の印を、比べるときの本人の手番で分ける（`regret.compare` の `surprise`、呼び名は `regret.kind_label`）。
+  自分の手は「悔しかった手」（原因必須）、相手の手は「驚いた手」（原因任意、`clean_mark(surprise=True)`）。
+  **以前は相手の手への印も一致／感覚だけに入っていた**（試験の期待値も直した）。印の上限は悔しかった手と驚いた手で合わせて10個
+- **迷った別の読み**（`shogi_analyzer/alts.py`、画面は `app.alt_editor`）: 印の入力欄で、その手を指す直前の局面の盤（盤面入力と同じ部品）から
+  手順を入れる。1つの印に `MAX_ALTS = 3`、1つの読み `MAX_ALT_PLIES = 6` 手。印の `alts`（USI の並び）に入る。
+  **評価は印の入力の完了後**（答えを見る前の順番を守る）。読みを、その局面から始まる短い棋譜として全手解析にかけるだけ（新しいエンジンAPIは無い）。
+  裏の処理（`start_pipe`）が AIコーチの前に評価し、画面（`eval_alts`）は裏の処理が持っていないときだけ評価する。結果は `alt_cache`
+  （`alts.key` → 解析の行）に置き、`result.json` の `alt_eval` に保存する。実戦の手の後と比べた差が `alts.CLOSE = 0.05` 以上で「良い／悪い」（**仮の値**）
+- **傾向まとめ**（`shogi_analyzer/trend.py` = 規則・検証、`shogi_coach/trend.py` = Gemini と保存、`report.trend_pdf` / `trend_html`）:
+  印の入力を終えた対局を保存するたびに裏で作り直す（`trend_job.refresh_async`）。集計と局面例が前回と同じなら作り直さない。
+  保存先は `games/<利用者>/trend.json`（30日削除の対象）。局面例は `learn.examples`（1局ごとに種類別2つまで、summary.json に SFEN で保存）
+  から `learn.pick_examples` で4つまで。Gemini は道具を持たないエージェント（`trend_writer`）で、箇条書きだけを書く。
+  `trend.verify` が、材料に無い数字を含む行・120字超の行を捨て、8行までにする。3ページに収まることを試験で確かめている
+- **成り駒の色**: `service.to_svg`（cshogi の図の成り駒の定義に色を付ける）と、PDF の `BoardDiagram`。色は `service.PROMOTED_FILL`
+
 ## 動かし方（Cloud Shell）
 
 ```bash
 cd ~/zenn5th_shogi && . .venv/bin/activate
-python -m pytest -q                                  # 36件通ること
+python -m pytest -q                                  # 44件通ること
 export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:-zenn5thshogi}"   # 無いとAIコーチが出ない（下の注意）
 streamlit run app.py --server.port=8080 --server.enableCORS=false --server.enableXsrfProtection=false
 ```
