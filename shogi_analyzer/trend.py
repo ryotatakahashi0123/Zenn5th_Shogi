@@ -34,11 +34,11 @@ def facts(agg: dict) -> list[str]:
         out.append(f"対局がまだ{MIN_GAMES_NOTE}局より少ないので、傾向は参考程度です。")
     if agg["tags"]:
         top = "、".join(f"{t['tag']}（{t['count']}回）" for t in agg["tags"][:3])
-        out.append(f"悔しかった手で多く選んだ原因: {top}。")
+        out.append(f"悪手だと思った自分の手で多く選んだ原因: {top}。")
     regret_phase = agg.get("regret_by_phase", {})
     if any(regret_phase.values()):
         p = max(PHASES, key=lambda k: (regret_phase.get(k, 0), -PHASES.index(k)))
-        out.append("悔しかった手の印が多い段階: " + "、".join(f"{k} {regret_phase.get(k, 0)}" for k in PHASES)
+        out.append("悪手だと思った自分の手の印が多い段階: " + "、".join(f"{k} {regret_phase.get(k, 0)}" for k in PHASES)
                    + f"（いちばん多いのは{p}）。")
     if agg["bad_moves"]:
         p = max(PHASES, key=lambda k: (agg["bad_by_phase"][k], -PHASES.index(k)))
@@ -48,10 +48,16 @@ def facts(agg: dict) -> list[str]:
                    f"（{pct(agg['bad_noticed'] / agg['bad_moves'])}）。")
     c = agg["counts"]
     if c.get("feeling_only"):
-        out.append(f"悔しかったが、エンジンでは勝率がほとんど下がっていなかった手（感覚だけ）: {c['feeling_only']}回。")
+        out.append(f"悪手だと思ったが、エンジンでは勝率がほとんど下がっていなかった自分の手（感覚だけ）: {c['feeling_only']}回。")
+    if c.get("hesitate"):
+        out.append(f"ほかにも指す手があったと思いながら指した自分の手: {c['hesitate']}回。")
+    if c.get("opp_match") or c.get("opp_feeling_only") or c.get("opp_data_only"):
+        out.append(f"相手の悪手候補は{c.get('opp_match', 0) + c.get('opp_data_only', 0)}回。そのうち悪手だと気づけたのは"
+                   f"{c.get('opp_match', 0)}回（相手の悪手だと思ったが、エンジンでは勝率がほとんど下がっていなかった手は"
+                   f"{c.get('opp_feeling_only', 0)}回）。")
     s = agg.get("surprise", {})
     if s.get("total"):
-        out.append(f"驚いた相手の手は{s['total']}回。そのうちエンジンの最善手と同じだったのは{s['best']}回、"
+        out.append(f"予想外で驚いた相手の手は{s['total']}回。そのうちエンジンの最善手と同じだったのは{s['best']}回、"
                    f"相手の悪手候補だったのは{s['bad']}回。")
     a = agg.get("alts", {})
     if sum(a.values()):
@@ -59,6 +65,9 @@ def facts(agg: dict) -> list[str]:
                    f"同じくらい {a['同じくらい']}本、悪かった {a['悪い']}本。")
     if agg["good_moves"]:
         out.append(f"自分の好手候補は{agg['good_moves']}回。")
+    if c.get("good_match") or c.get("good_feeling_only"):
+        out.append(f"好手だと思った自分の手は{c.get('good_match', 0) + c.get('good_feeling_only', 0)}回。"
+                   f"そのうちエンジンの最善手と同じだったのは{c.get('good_match', 0)}回。")
     return out
 
 

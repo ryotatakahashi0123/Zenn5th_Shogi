@@ -27,8 +27,10 @@ def _gap():
 
 def test_summarize_counts_only_numbers():
     s = learn.summarize(ROWS, _gap(), "2026-10-13")
-    assert s["counts"] == {"match": 1, "feeling_only": 1, "data_only": 2, "surprise": 0,
-                           "good_match": 1, "good_feeling_only": 0, "good_data_only": 0}
+    assert s["counts"] == {"match": 1, "feeling_only": 1, "data_only": 2, "hesitate": 0,
+                           "good_match": 1, "good_feeling_only": 0, "good_data_only": 0,
+                           "opp_match": 0, "opp_feeling_only": 0, "opp_data_only": 1, "surprise": 0,
+                           "opp_good_match": 0, "opp_good_feeling_only": 0, "good_opponent": 0}
     assert s["tags"] == {"読み抜け": 2, "手拍子": 1} and s["good"] == 1
     # 自分（▲）の悪手候補だけ。9手の対局は 1〜3 序盤、4〜6 中盤、7〜9 終盤
     assert s["bad"] == [{"ply": 3, "label": "悪手", "phase": "序盤", "noticed": True},
@@ -47,12 +49,13 @@ def test_aggregate():
     assert a["bad_by_phase"] == {"序盤": 2, "中盤": 2, "終盤": 2} and a["bad_by_label"]["悪手"] == 2
     assert learn.aggregate([])["games"] == 0
     assert learn.aggregate([s, {**s, "pending": True}])["games"] == 1  # 印の入力がまだの対局は、記録に数えない
-    # エンジンで解析しなかった対局は、選んだ原因だけを数える（好手の印に原因は無い）
-    marks = [regret.clean_mark(3, ["読み抜け"], "", 9), regret.clean_mark(5, [], "", 9, kind="good")]
+    # エンジンで解析しなかった対局は、悪手だと思った自分の手で選んだ原因だけを数える
+    marks = [regret.clean_mark(3, ["読み抜け"], "", 9), regret.clean_mark(5, ["欲張り"], "", 9, kind="good"),
+             regret.clean_mark(4, ["手拍子"], "", 9), {"ply": 7, "kind": "regret", "tags": ["読み抜け"], "note": ""}]
     m = learn.summarize_marks(marks, 9, "▲", "2026-10-13")
-    assert m["tags"] == {"読み抜け": 1} and m["analyzed"] is False and m["bad"] == [] and m["counts"]["match"] == 0
+    assert m["tags"] == {"読み抜け": 2} and m["analyzed"] is False and m["bad"] == [] and m["counts"]["match"] == 0
     a2 = learn.aggregate([s, m])
-    assert a2["games"] == 2 and a2["games_analyzed"] == 1 and a2["tags"][0] == {"tag": "読み抜け", "count": 3}
+    assert a2["games"] == 2 and a2["games_analyzed"] == 1 and a2["tags"][0] == {"tag": "読み抜け", "count": 4}
 
 
 def test_password_hash_and_lockout():
@@ -125,3 +128,17 @@ def test_local_store_users_and_games(tmp_path, monkeypatch):
     assert storage.load_prefs("taro") == {"always_save": True} and storage.load_prefs("saburo") == {}
     with pytest.raises(ValueError):
         storage.save_prefs("../x", {})
+
+
+def test_six_labels_in_record_and_facts():
+    from shogi_analyzer import trend
+    # 2手目（△の悪手候補）に「相手の手・悪手だと思った」、4手目に「相手の手・予想外で驚いた」、7手目に「ほかにも指す手があった」
+    marks = [regret.clean_mark(2, [], "", 9), regret.clean_mark(4, [], "", 9, kind="other"),
+             regret.clean_mark(7, [], "", 9, kind="other"), regret.clean_mark(1, [], "", 9, kind="good")]
+    s = learn.summarize(ROWS, regret.compare(ROWS, marks, "▲"))
+    assert s["counts"]["opp_match"] == 1 and s["counts"]["opp_data_only"] == 0 and s["counts"]["hesitate"] == 1
+    assert s["surprise"]["total"] == 1 and s["counts"]["good_match"] == 1
+    f = trend.facts(learn.aggregate([s]))
+    assert "相手の悪手候補は1回。そのうち悪手だと気づけたのは1回（相手の悪手だと思ったが、エンジンでは勝率がほとんど下がっていなかった手は0回）。" in f
+    assert "ほかにも指す手があったと思いながら指した自分の手: 1回。" in f
+    assert "好手だと思った自分の手は1回。そのうちエンジンの最善手と同じだったのは1回。" in f
