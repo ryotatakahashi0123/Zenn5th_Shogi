@@ -5,7 +5,8 @@
 
     games/<利用者>/<対局ID>/kifu.kif | kifu.csa   棋譜（対局者名を含む）
     games/<利用者>/<対局ID>/summary.json         印とエンジン判定の集計（数だけ。shogi_analyzer.learn.summarize）
-    games/<利用者>/<対局ID>/result.json          解析の行、印、AIコーチとのやり取り
+    games/<利用者>/<対局ID>/result.json          解析の行、印、迷った別の読みの評価、AIコーチとのやり取り
+    games/<利用者>/trend.json                    複数の対局の傾向まとめ（shogi_coach.trend。対局を保存するたびに作り直す）
     auth/users.json                               利用者とパスワードのハッシュ（shogi_coach.auth）
     prefs/<利用者>.json                          利用者ごとの設定（保存の同意を毎回確認しない、など）
 """
@@ -120,3 +121,16 @@ def load_summaries(user: str) -> list[dict]:
         except Exception:
             continue
     return out
+
+
+def _user_dir(user: str) -> str:
+    return _game(user, "0").rsplit("/", 1)[0]
+
+
+def save_trend(user: str, obj: dict) -> str:
+    return put(f"{_user_dir(user)}/trend.json", json.dumps(obj, ensure_ascii=False), "application/json")
+
+
+def load_trend(user: str) -> dict | None:
+    raw = get(f"{_user_dir(user)}/trend.json")
+    return json.loads(raw) if raw else None

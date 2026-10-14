@@ -4,8 +4,9 @@
 0. 初期画面（これまでの記録）の「棋譜を入力する」→ 棋譜入力モード: ファイルを読み込むか、テキストを貼り付けるか、盤面で1手ずつ指して入力する。保存は本人が同意したときだけ。ふりかえりの途中でも行き来できる
    棋譜を読み込んだ時点で、エンジンの解析を裏で始める（結果は印の入力が終わるまで見せない）。
    解析と印の入力が終わると、AIコーチのふりかえりも自動で始める。印を付けずに、すぐ解析結果を見ることもできる
-1. 棋譜を読み込む → 局面図を見ながら、自分が悔しかった手（原因を選ぶ）と好手に印を付ける（解析結果はまだ見せない）
-2. 入力を完了 → 将棋エンジンで全手を解析し、印とのずれ・形勢グラフ・悪手候補・好手を表示
+1. 棋譜を読み込む → 自分の手番を確かめ、局面図を見ながら手に印を付ける（解析結果はまだ見せない）。
+   自分の手: 悪手だと思った / ほかにも指す手があった / 好手だと思った。相手の手: 悪手だと思った / 予想外で驚いた / 好手だと思った
+2. 入力を完了 → 将棋エンジンで全手を解析し、6つのラベルごとの局面と読み筋・形勢グラフ・悪手候補を表示
 3. 「AIコーチにふりかえってもらう」→ ADK エージェント（Gemini）が自分で局面を選んで深掘りし、講評を書く
 4. 対局について質問 → エージェントが必要に応じてエンジンで確かめてから答える
 
@@ -29,15 +30,19 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from shogi_analyzer import entry, learn, regret, report
+from shogi_analyzer import alts, coach_view, entry, learn, regret, report
 from shogi_analyzer.kifu_analysis import GOOD_GAP, detect_format, load_kifu
-from shogi_analyzer.service import board_svg, lines_jp, move_list
+from shogi_analyzer.service import (board_svg, ext_key, extend_rows, line_positions, lines_jp, move_list, position_svg,
+                                    sfen_svg)
 from shogi_coach import auth, storage
+from shogi_coach import trend as trend_job
 from shogi_coach.engine_client import get_client
 
 MAX_UPLOAD = 200_000  # bytes
 # 棋譜入力の将棋盤（cshogi の図を表示し、押されたマスを返す画面部品）
 board_input = components.declare_component("board_input", path=str(Path(__file__).parent / "assets" / "board_input"))
+# AIコーチの講評（「N手目」を押すと局面図をその手にする画面部品）
+coach_text = components.declare_component("coach_text", path=str(Path(__file__).parent / "assets" / "coach_text"))
 OK_EXT = (".kif", ".kifu", ".csa", ".txt")
 COACH_ERROR = "AIコーチの応答に失敗しました"
 REVIEW = "この対局をふりかえってください。"
@@ -46,7 +51,7 @@ AI_READY = bool(os.environ.get("GOOGLE_CLOUD_PROJECT")) or os.environ.get("COACH
 
 TOOL_LABEL = {
     "analyze_game": lambda a: "全手の形勢を確認",
-    "regret_gap": lambda a: "悔しかった手・好手の印とエンジンの判定を突き合わせる",
+    "regret_gap": lambda a: "6つのラベルの印とエンジンの判定を突き合わせる",
     "past_tendencies": lambda a: "これまでの対局の記録を確認",
     "deep_dive": lambda a: f"{a.get('ply')}手目の局面を深く読む",
     "compare_move": lambda a: f"{a.get('ply')}手目で「{a.get('move')}」と比べる",
@@ -54,7 +59,7 @@ TOOL_LABEL = {
 
 st.set_page_config(page_title="ふりかえり将棋", page_icon="☗", layout="wide")
 st.title("ふりかえり将棋")
-st.caption("棋譜を読み込み、まず自分が悔しかった手と好手に印を付けます。そのあと将棋エンジンの解析と比べ、"
+st.caption("棋譜を読み込み、まず自分の感覚で手に印を付けます（悪手だと思った、迷った、驚いた、好手だと思った など）。そのあと将棋エンジンの解析と比べ、"
            "AIコーチが勝負の分かれ目をふりかえります。")
 
 JST = timezone(timedelta(hours=9))
@@ -108,7 +113,10 @@ def logout():
 
 
 if not st.session_state.get("user"):
-    signup_page() if st.session_state.get("auth_page") == "signup" else login_page()
+    if st.session_state.get("auth_page") == "signup":  # 式のまま書くと、Streamlit が戻り値（None）を画面に出す
+        signup_page()
+    else:
+        login_page()
     st.stop()
 user = st.session_state["user"]
 
@@ -176,6 +184,12 @@ def read_input(up, text, played, resign=False) -> tuple[str, str, bytes]:
     return name, label, data
 
 
+def kifu_download(data: bytes, name: str, label: str, uid: str):
+    """棋譜のダウンロード。ファイル名に押した時刻（秒まで）を付ける（例: kifu_20261014-153012.kif）。"""
+    stem, ext = os.path.splitext(name)
+    st.html(report.timed_download_link(data, stem, ext or ".kif", label, uid=uid), unsafe_allow_javascript=True)
+
+
 def history(refresh=False) -> list[dict]:
     """この利用者が保存した対局の集計。保存先を毎回読まないよう、画面を開いているあいだ覚えておく。"""
     if refresh or "history" not in st.session_state:
@@ -186,26 +200,36 @@ def history(refresh=False) -> list[dict]:
     return st.session_state["history"]
 
 
-def save_game(user_, src_, ms_, my_side_, rows_, marks_, chat_, actions_, revealed=True):
+def save_game(user_, src_, ms_, my_side_, rows_, marks_, chat_, actions_, revealed=True, alt_rows_=None, ext_=None):
     """この対局の集計と結果を保存する（あとから開き直せるように）。呼ぶのは、本人が保存に同意しているときだけ。
 
     revealed が False なら、印の入力がまだの対局（あとで続きから印を付ける）。rows_ が None なら、解析もまだ。
+    alt_rows_: 迷った別の読みの評価（alts.key → 解析の行）。印の入力が終わった対局は、傾向まとめも作り直す。
     """
     day = datetime.now(JST).strftime("%Y-%m-%d")
-    plies = len(load_kifu(src_["data"], src_["name"]).moves)
-    summary = (learn.summarize(rows_, regret.compare(rows_, marks_, my_side_), day) if rows_ else
-               learn.summarize_marks(marks_, plies, my_side_, day))
+    kifu_ = load_kifu(src_["data"], src_["name"])
+    alt_rows_ = dict(alt_rows_ or {})
+    if rows_:
+        gap_ = regret.compare(rows_, marks_, my_side_, alts.summaries(kifu_, marks_, rows_, alt_rows_))
+        summary = learn.summarize(rows_, gap_, day, kifu_)
+    else:
+        summary = learn.summarize_marks(marks_, len(kifu_.moves), my_side_, day,
+                                        {m["ply"]: m["side"] for m in move_list(kifu_)})
     storage.save_json(user_, src_["id"], "summary", {**summary, "label": src_["label"], "pending": not revealed})
     storage.save_json(user_, src_["id"], "result",
                       {"label": src_["label"], "ms": ms_, "my_side": my_side_, "rows": rows_, "marks": marks_,
-                       "chat": chat_, "actions": actions_, "revealed": revealed, "redone": bool(src_.get("redone"))})
+                       "chat": chat_, "actions": actions_, "revealed": revealed, "redone": bool(src_.get("redone")),
+                       "alt_eval": alt_rows_, "ext_lines": dict(ext_ or {})})
+    if revealed:
+        trend_job.refresh_async(user_, AI_READY)
 
 
-def start_pipe(kifu_, key_, ms_, src_, user_, marks_, my_side_):
+def start_pipe(kifu_, key_, ms_, src_, user_, marks_, my_side_, alt_cache_, ext_cache_):
     """棋譜を読み込んだら、裏で 解析 →（印の入力を待つ）→ AIコーチのふりかえり → 保存 まで進める。
 
     画面の操作を待たずに進み、別の画面に移っても止まらない。画面の部品には触らない（結果は pipe に置き、画面が取りに来る）。
     marks_ が None のあいだは印の入力中で、解析結果は画面に出さない。
+    alt_cache_: 迷った別の読みの評価を入れる場所（画面と同じもの。{"key", "rows", "busy"}）。
     """
     pipe = {"key": key_, "rows": None, "error": None, "analyzed": False, "marks": marks_, "my_side": my_side_,
             "coach": None, "job": None, "taken": False, "done": False, "cancel": False}
@@ -233,7 +257,14 @@ def start_pipe(kifu_, key_, ms_, src_, user_, marks_, my_side_):
             time.sleep(0.5)
         try:
             rows_, chat_, actions_ = pipe["rows"], [], []
-            gap_ = regret.compare(rows_, pipe["marks"], pipe["my_side"])
+            if rows_ and alts.lines_of(pipe["marks"]):  # 迷った別の読みを先に評価する（AIコーチにも渡すため）
+                alt_cache_["busy"] = True
+                try:
+                    alts.evaluate(get_client(), kifu_, pipe["marks"], ms_, alt_cache_["rows"], lambda: pipe["cancel"])
+                finally:
+                    alt_cache_["busy"] = False
+            gap_ = regret.compare(rows_, pipe["marks"], pipe["my_side"],
+                                  alts.summaries(kifu_, pipe["marks"], rows_, alt_cache_["rows"]))
             if pipe["coach"] and not pipe["cancel"]:
                 job = {"prompt": REVIEW, "label": "AIコーチが局面を選んで調べています…", "tools": [], "answer": None,
                        "done": False}
@@ -248,7 +279,8 @@ def start_pipe(kifu_, key_, ms_, src_, user_, marks_, my_side_):
                 job["done"] = True
                 chat_, actions_ = [("user", REVIEW), ("assistant", job["answer"])], list(job["tools"])
             if src_["consent"] and not pipe["cancel"]:  # 画面を閉じていても、同意があれば結果を残す
-                save_game(user_, src_, ms_, pipe["my_side"], rows_, pipe["marks"], chat_, actions_)
+                save_game(user_, src_, ms_, pipe["my_side"], rows_, pipe["marks"], chat_, actions_,
+                          alt_rows_=alt_cache_["rows"], ext_=ext_cache_["rows"])
         except Exception as e:
             src_["save_error"] = str(e)
         pipe["done"] = True
@@ -270,14 +302,21 @@ def open_game(game_id):
         digest, saved_ms = hashlib.sha256(data).hexdigest(), int(res.get("ms", 400))
         side = next((k for k, v in regret.SIDES.items() if v == res.get("my_side")), "先手")
         src = {"id": game_id, "digest": digest, "name": g["name"], "label": res.get("label") or game_id, "data": data,
-               "saved": True, "consent": True, "save_error": None, "summary": ((digest, saved_ms), regret.SIDES[side])}
+               "saved": True, "consent": True, "save_error": None,
+               "summary": ((digest, saved_ms), regret.SIDES[side], len(res.get("alt_eval") or {}),
+                           len(res.get("ext_lines") or {}))}
         done = res.get("revealed", True)  # False なら、印の入力がまだ（続きから印を付ける。解析結果はまだ見せない）
         analyzed = res.get("rows") is not None
         src["pending_marks"] = list(res.get("marks", []))
         src["redone"] = bool(res.get("redone"))
         if not done:
             src["summary"] = None  # 印を付け終えたら、結果を保存し直す
-        ss.update(src=src, marks={int(m["ply"]): {"kind": "regret", **m} for m in res.get("marks", [])}, drafts={},
+        ss["alt_cache"] = {"key": (digest, saved_ms), "rows": dict(res.get("alt_eval") or {}), "busy": False}
+        ss["ext_cache"] = {"key": (digest, saved_ms), "rows": dict(res.get("ext_lines") or {}), "busy": False}
+        sides = {m["ply"]: m["side"] for m in move_list(load_kifu(data, g["name"]))}
+        marks_ = {int(m["ply"]): {**m, "kind": regret.norm_kind(m.get("kind"), sides.get(int(m["ply"])) == regret.SIDES[side])}
+                  for m in res.get("marks", [])}  # 以前の種類（regret）は、そのときの手番で読み替える
+        ss.update(src=src, marks=marks_, drafts={},
                   revealed=done, mark_ply=0, ply_keep=0, key=(digest, saved_ms) if analyzed else None,
                   rows=res.get("rows") or [], coach=None,
                   chat=[tuple(c) for c in res.get("chat", [])], actions=list(res.get("actions", [])), saved=None,
@@ -288,7 +327,8 @@ def open_game(game_id):
 
 def save_result():
     """同意があるとき、この対局の集計・解析結果・印・AIコーチとのやり取りを保存する（あとから開き直せるように）。"""
-    save_game(user, src, ms, my_side, rows, list(marks.values()), st.session_state["chat"], st.session_state["actions"])
+    save_game(user, src, ms, my_side, rows, list(marks.values()), st.session_state["chat"], st.session_state["actions"],
+              alt_rows_=alt_cache["rows"], ext_=ext_cache["rows"])
 
 
 def start_study(name, label, data, consent):
@@ -327,6 +367,7 @@ def confirm_delete():
                     st.session_state["pipe"]["cancel"] = True
                 st.session_state.update(src=None, pipe=None, key=None)
             st.session_state["open_error"] = None
+            trend_job.refresh_async(user, AI_READY)
         except Exception as e:
             st.session_state["open_error"] = f"削除に失敗しました: {e}"
         st.session_state["delete"] = None
@@ -340,8 +381,9 @@ def confirm_delete():
 def home():
     """初期画面。棋譜入力モードへの入口。"""
     st.markdown("1. 棋譜を入力する（ファイルを読み込む、テキストを貼り付ける、盤面で1手ずつ指す）\n"
-                "2. 自分の感覚で、悔しかった手と好手に印を付ける\n"
-                "3. エンジンの解析と比べ、ずれをふりかえる")
+                "2. 自分の手番を確かめ、自分の感覚で手に印を付ける（自分の手: 悪手だと思った／ほかにも指す手があった／好手だと思った、"
+                "相手の手: 悪手だと思った／予想外で驚いた／好手だと思った）\n"
+                "3. エンジンの解析と比べ、ラベルごとに局面とその後の読み筋をふりかえる")
     c1, c2 = st.columns(2)
     c1.button("棋譜を入力する", type="primary", on_click=set_mode, args=("input",), use_container_width=True)
     if st.session_state["src"]:
@@ -357,7 +399,8 @@ def home():
         c = h.get("counts", {})
         row = st.columns([6, 1, 1])
         row[0].markdown(f'**{h.get("created", "")}**　{h.get("label", "")}　{h.get("plies", "?")}手（{h.get("my_side", "")}）　'
-                        f'一致 {c.get("match", 0)}／感覚だけ {c.get("feeling_only", 0)}／データだけ {c.get("data_only", 0)}')
+                        f'印 {sum(c.get(k, 0) for k in regret.MARKED_KEYS)}／自分の悪手に気づけた {c.get("match", 0)}／'
+                        f'気づかなかった自分の悪手 {c.get("data_only", 0)}')
         if h.get("pending"):
             row[0].caption("印の入力がまだです。「続ける」で、続きから印を付けられます（解析は済んでいます）。")
         row[1].button("続ける" if h.get("pending") else "開く", key=f'open_{h["game_id"]}', on_click=open_game,
@@ -378,11 +421,11 @@ def home():
     m = st.columns(4)
     m[0].metric("保存した対局", f'{agg["games"]}局')
     m[1].metric("自分の悪手候補", agg["bad_moves"], help="エンジンの判定で、自分の悪手・疑問手・緩手だった手の合計")
-    m[2].metric("うち、自分で気づけた数", agg["bad_noticed"], help="悪手候補のうち、解析を見る前に「悔しかった手」の印を付けていた数")
+    m[2].metric("うち、自分で気づけた数", agg["bad_noticed"], help="悪手候補のうち、解析を見る前に「悪手だと思った」印を付けていた数")
     m[3].metric("自分の好手候補", agg["good_moves"])
     t1, t2 = st.columns(2)
     with t1:
-        st.markdown("**選んだ原因（多い順）**")
+        st.markdown("**悪手だと思った自分の手で選んだ原因（多い順）**")
         if agg["tags"]:
             st.dataframe(pd.DataFrame([{"原因": t["tag"], "回数": t["count"]} for t in agg["tags"]]), hide_index=True,
                          use_container_width=True)
@@ -395,6 +438,65 @@ def home():
     st.caption("保存に同意した対局だけを、決まった規則で数えています（AIの判断ではありません）。段階は、その対局の手数を3等分した"
                "序盤・中盤・終盤です。AIコーチは、この記録を見てふりかえりを書きます。"
                + ("保存から30日たった対局は、記録からも消えます。" if storage.BUCKET else ""))
+    trend_section()
+
+
+def load_trend():
+    try:
+        return storage.load_trend(user)
+    except Exception:
+        return None
+
+
+@st.fragment(run_every=2.0 if trend_job.running(user) else None)
+def trend_section():
+    """大会に向けた傾向まとめ（対局を保存するたびに、裏で作り直す）。3ページ以内のPDFと印刷用ページ。"""
+    from shogi_analyzer import trend as trend_rules
+    st.markdown("#### 大会に向けた傾向まとめ")
+    busy = trend_job.running(user)
+    if st.session_state.get("trend_busy") and not busy:  # 作り終えた。1秒ごとの描き直しを止めるため、画面全体を描き直す
+        st.session_state["trend_busy"] = False
+        st.rerun()
+    st.session_state["trend_busy"] = busy
+    d = load_trend()
+    if busy:
+        st.info("傾向まとめを作り直しています…（保存した対局が増えるたびに、自動で作り直します）")
+    if not d:
+        if not busy:
+            st.caption("まだありません。印の入力を終えた対局を保存すると、自動で作ります。")
+            st.button("いま作る", on_click=trend_job.refresh_async, args=(user, AI_READY, True), key="trend_make")
+        return
+    st.caption(f'{d["created"]}　保存した対局 {d["games"]}局から作成')
+    t1, t2 = st.columns(2)
+    with t1:
+        st.markdown("**記録から言えること**（決まった規則で数えた結果）")
+        st.markdown("\n".join(f"- {f}" for f in d["facts"]))
+    with t2:
+        st.markdown("**AIの所感**（Gemini。記録に無い数字を含む行は除いています）")
+        if d["ai"]:
+            st.markdown("\n".join(f"- {b}" for b in d["ai"]))
+        else:
+            st.caption("AIの所感はありません。" + d.get("ai_error", ""))
+    if d["examples"]:
+        st.markdown("**局面例**（決まった規則で選んだもの。図はその手を指す直前の局面、赤い字は成り駒）")
+        for row in range(0, len(d["examples"]), 2):
+            cols = st.columns(2)
+            for col, e in zip(cols, d["examples"][row:row + 2]):
+                with col:
+                    st.markdown(f"**{trend_rules.example_title(e)}**")
+                    st.image(sfen_svg(e["sfen"]), width=330)
+                    st.caption("　".join(f"{k}: {v}" for k, v in trend_rules.example_text(e)))
+    ss = st.session_state
+    if (ss.get("trend_doc") or (None,))[0] != d["digest"] + d["created"]:
+        ss["trend_doc"] = (d["digest"] + d["created"], report.trend_pdf(d), report.trend_html(d))
+    c1, c2, c3 = st.columns(3)
+    c1.download_button("PDFをダウンロード", ss["trend_doc"][1], mime="application/pdf", file_name="keikou_matome.pdf",
+                       on_click="ignore", use_container_width=True, key="trend_pdf")
+    with c2:
+        st.html(report.print_link(ss["trend_doc"][2]), unsafe_allow_javascript=True)
+    c3.button("いま作り直す", on_click=trend_job.refresh_async, args=(user, AI_READY, True), key="trend_redo",
+              disabled=busy, use_container_width=True,
+              help="AIの所感も書き直します（Gemini を1回呼びます）。集計が変わっていなければ、ふだんは作り直しません。")
 
 
 def entry_set(moves, sel=None, promo=None):
@@ -442,8 +544,7 @@ def entry_board() -> bool:
     st.caption(f"入力した手順（{len(jp)}手）: " + (" ".join(jp) if jp else "まだありません")
                + f"　／　次は{'☗先手' if turn == 0 else '☖後手'}の番です。")
     if played:
-        st.download_button("盤面で入力した棋譜をダウンロード（CSA）", entry.to_csa(played).encode("utf-8"),
-                           file_name="kifu.csa", mime="text/plain", on_click="ignore")
+        kifu_download(entry.to_csa(played).encode("utf-8"), "kifu.csa", "盤面で入力した棋譜をダウンロード（CSA）", "entry")
     return resign
 
 
@@ -526,8 +627,7 @@ def kifu_zone():
                                 placeholder="将棋アプリで棋譜をコピーして、ここに貼り付けてください（KIF / CSA 形式）")
             if src:
                 st.markdown(f"いま読み込んでいる棋譜: **{src['label']}**")
-                st.download_button("いまの棋譜をダウンロード", src["data"], file_name=src["name"], mime="text/plain",
-                                   on_click="ignore")
+                kifu_download(src["data"], src["name"], "いまの棋譜をダウンロード", "current")
                 st.caption("ファイルと貼り付けの欄は、画面を移ると空に戻ります。何も入れずに下のボタンを押すと、いまの棋譜を使います。")
         with z2:
             resign = entry_board()
@@ -544,12 +644,12 @@ def kifu_zone():
                    + "同意しなくても、すべての機能を使えます。一度保存したものを、この画面から取り消すことはできません。")
         b1, b2, b3 = st.columns(3)
         start = b1.button("この棋譜でふりかえりを始める", type="primary", use_container_width=True,
-                          help="まず自分で悔しかった手と好手に印を付けます。解析は裏で先に進めておきます。")
+                          help="まず自分の感覚で手に印を付けます。解析は裏で先に進めておきます。")
         quick = b2.button("印を付けずに、すぐ解析結果を見る", use_container_width=True,
                           help="棋譜だけで解析します。解析とAIコーチのふりかえりが自動で進みます。")
         later = b3.button("いったん閉じて、あとで印を付ける", use_container_width=True,
                           help="棋譜を保存して最初の画面に戻ります。解析は裏で進み、結果も保存されます。"
-                               "あとで「保存した対局」の「続ける」から、悔しかった手に印を付けられます。")
+                               "あとで「保存した対局」の「続ける」から、手に印を付けられます。")
         if st.session_state.get("confirm"):
             confirm_save()
         if resign or start or quick or later:
@@ -587,8 +687,8 @@ base_name = os.path.splitext(src["name"])[0]
 h1, h2, h3, h4 = st.columns([4, 1, 1, 1])
 h4.button("最初の画面に戻る", key="home_top", on_click=set_mode, args=("home",), use_container_width=True)
 h1.subheader(f"☗{kifu.names[0] or '先手'}　vs　☖{kifu.names[1] or '後手'}（{len(kifu.moves)}手）")
-h2.download_button("棋譜をダウンロード", src["data"], file_name=src["name"], mime="text/plain", on_click="ignore",
-                   use_container_width=True)
+with h2:
+    kifu_download(src["data"], src["name"], "棋譜をダウンロード", "study")
 h3.button("棋譜入力に戻る", on_click=set_mode, args=("input",), use_container_width=True)
 if src["save_error"]:
     st.caption(f"棋譜の保存に失敗しました（ふりかえりは続けられます）: {src['save_error']}")
@@ -596,7 +696,7 @@ elif src["saved"]:
     st.caption("この対局は、同意にもとづいて保存しています" + ("（30日で自動的に削除されます）。" if storage.BUCKET else "。")
                + "最初の画面の「保存した対局」から、解析結果をいつでも開き直せます。")
 
-# ---- 1. 悔しかった手・好手の印（本人の感覚。エンジンやAIは代わりに付けない） ----
+# ---- 1. 6つのラベルの印（本人の感覚。エンジンやAIは代わりに付けない） ----
 # 答えを見ながらでは学習にならないので、入力を完了するまで解析結果を見せない（解析も始めない）。
 marks = st.session_state["marks"]    # {手数: {"ply", "kind", "tags", "note"}}
 drafts = st.session_state["drafts"]  # {手数: {"kind", "tags", "note"}} 入力途中の内容。別の手に移っても残す
@@ -604,11 +704,20 @@ moves = {m["ply"]: m for m in move_list(kifu)}
 
 # 棋譜を読み込んだら、裏で解析を始める（思考時間を変えたら、その値でやり直す）。保存した対局を開き直したときは始めない
 key = (src["digest"], ms)
+# 迷った別の読みの評価（alts.key → 解析の行）。棋譜か思考時間が変わったら空にする。裏の処理と画面で同じものを使う
+alt_cache = st.session_state.get("alt_cache")
+if not alt_cache or alt_cache["key"] != key:
+    alt_cache = st.session_state["alt_cache"] = {"key": key, "rows": {}, "busy": False}
+# 伸ばした読み筋（service.ext_key → 指す前の局面からの USI の手順）。読み筋が短く途切れた局面の続きを読む
+ext_cache = st.session_state.get("ext_cache")
+if not ext_cache or ext_cache["key"] != key:
+    ext_cache = st.session_state["ext_cache"] = {"key": key, "rows": {}, "busy": False}
 pipe = st.session_state.get("pipe")
 if st.session_state.get("key") != key and (not pipe or pipe["key"] != key):
     if pipe:
         pipe["cancel"] = True
-    pipe = start_pipe(kifu, key, ms, src, user, list(marks.values()) if st.session_state["revealed"] else None, my_side)
+    pipe = start_pipe(kifu, key, ms, src, user, list(marks.values()) if st.session_state["revealed"] else None, my_side,
+                      alt_cache, ext_cache)
     st.session_state["pipe"] = pipe
 
 
@@ -657,6 +766,20 @@ if st.session_state.get("confirm"):
     confirm_save()
 
 
+def mark_label(p, kind=None):
+    """印の呼び名（例: 「自分の手・悪手だと思った」）。自分の手か相手の手かは、サイドバーの自分の手番で決まる。"""
+    return regret.mark_title(kind or marks[p]["kind"], moves[p]["side"], my_side)
+
+
+def mine(p) -> bool:
+    return moves[p]["side"] == my_side
+
+
+def mark_kind(p, d) -> str:
+    """入力途中・印の種類を bad / other / good にそろえる（以前の regret も読み替える）。"""
+    return regret.norm_kind(d.get("kind"), mine(p))
+
+
 def move_text(p):
     return f'{p}手目 {moves[p]["side"]}{moves[p]["move_jp"]}' if p else "初期盤面"
 
@@ -688,7 +811,7 @@ def board_view() -> int:
         ply = ply if isinstance(ply, int) else cur_ply()
     st.session_state["ply_keep"] = ply
     if ply in marks:
-        st.caption(f'★ この手には印を付けています（{regret.MARK_KINDS[marks[ply]["kind"]]}）')
+        st.caption(f'★ この手には印を付けています（{mark_label(ply)}）')
     st.image(board_svg(kifu, ply), width=460)
     st.caption((f"{move_text(ply)} を指した局面です（色の付いたマスがこの手）。" if ply else "対局開始の局面です。")
                + "キーボードの ← → でも手を送れます。")
@@ -709,74 +832,176 @@ def pick_point():
         st.session_state["mark_ply"] = int(pts[0]["ply"])
 
 
-def keep_draft(p):
-    # 好手を選んでいるあいだは原因の欄を出さないので、前に選んだ原因はそのまま残す
+def keep_draft(p, alt_lines=None):
     old = drafts.get(p) or marks.get(p) or {}
-    drafts[p] = {"kind": st.session_state.get(f"kind_{p}", "regret"),
+    drafts[p] = {"kind": st.session_state.get(f"kind_{p}", mark_kind(p, old)),
                  "tags": list(st.session_state.get(f"tags_{p}", old.get("tags", []))),
-                 "note": st.session_state.get(f"note_{p}", "")}
+                 "note": st.session_state.get(f"note_{p}", old.get("note", "")),
+                 "alts": [list(a) for a in (old.get("alts", []) if alt_lines is None else alt_lines)]}
+
+
+def alt_set(**kw):
+    st.session_state["alt_edit"].update(kw)
+
+
+def add_alt(p):
+    """入力中の読みを、この手の迷った別の読みに加える（印のボタンを押すまでは入力途中）。"""
+    ed, cur = st.session_state["alt_edit"], drafts.get(p) or marks.get(p) or {}
+    lines = [list(a) for a in cur.get("alts", [])]
+    try:
+        lines.append(alts.clean_line(kifu, p, ed["moves"], lines))
+    except ValueError as e:
+        ed["error"] = str(e)
+        return
+    keep_draft(p, lines)
+    ed.update(moves=[], sel=None, promo=None, error=None)
+
+
+def drop_alt(p, i):
+    lines = [list(a) for a in (drafts.get(p) or marks.get(p) or {}).get("alts", [])]
+    keep_draft(p, lines[:i] + lines[i + 1:])
+
+
+def alt_editor(p):
+    """迷った別の読みの入力。その手を指す直前の局面の盤で、駒のマス → 行き先のマスを押して手順を入れる。
+
+    エンジンの評価は、印の入力を完了したあとで見せる（ここでは何も評価しない）。
+    """
+    ss = st.session_state
+    lines = (drafts.get(p) or marks.get(p) or {}).get("alts", [])
+    sfen = alts.start_sfen(kifu, p)
+    ed = ss.get("alt_edit")
+    if not ed or ed["ply"] != p:
+        ed = ss["alt_edit"] = {"ply": p, "moves": [], "sel": None, "promo": None, "error": None}
+    board, jp = entry.replay(ed["moves"], sfen)
+    turn = 0 if board.turn == cshogi.BLACK else 1
+    sel, promo = ed["sel"], ed["promo"]
+    full = len(ed["moves"]) >= alts.MAX_ALT_PLIES
+    goals = entry.targets(board, sel) if sel else set()
+
+    def hand(side):
+        return [{"key": k, "label": sym + (str(n) if n > 1 else ""), "enabled": side == turn and not full,
+                 "selected": side == turn and sel == k} for k, sym, n in entry.hand(board, side)]
+    if ed["moves"]:
+        before, _ = entry.replay(ed["moves"][:-1], sfen)
+        last = before.move_from_usi(ed["moves"][-1])
+    else:
+        last = kifu.moves[p - 2] if p > 1 else None
+    st.caption(f"{move_text(p)} を指す直前の局面です。実戦の手のかわりに迷った手から、"
+               f"{alts.MAX_ALT_PLIES}手まで指せます（相手の応手も入れられます）。1つの印に{alts.MAX_ALTS}つまで。")
+    ev = board_input(svg=entry.board_svg(board, last, sel, goals), geom=entry.GEOM, top=hand(1), bottom=hand(0),
+                     locked=bool(promo) or full, key=f"alt_board_{p}", default=None)
+    if ev and ev.get("n") != ss.get(f"alt_seen_{p}"):  # 盤が押された（同じ知らせを2回処理しない）
+        ss[f"alt_seen_{p}"] = ev["n"]
+        if not full:
+            mv, sel_, promo_ = entry.click(ed["moves"], sel, str(ev.get("key", "")), sfen)
+            ed.update(moves=mv, sel=sel_, promo=promo_, error=None)
+        st.rerun()
+    if promo:
+        q1, q2, q3 = st.columns(3)
+        q1.button("成る", key="alt_pro", on_click=alt_set, kwargs={"moves": ed["moves"] + [promo[1]], "sel": None, "promo": None},
+                  type="primary", use_container_width=True)
+        q2.button("成らない", key="alt_nopro", on_click=alt_set,
+                  kwargs={"moves": ed["moves"] + [promo[0]], "sel": None, "promo": None}, use_container_width=True)
+        q3.button("選び直す", key="alt_resel", on_click=alt_set, kwargs={"sel": None, "promo": None}, use_container_width=True)
+    st.caption("入力中の読み: " + (" ".join(jp) if jp else "（まだありません）"))
+    a1, a2, a3 = st.columns(3)
+    a1.button("この読みを加える", key="alt_add", on_click=add_alt, args=(p,), type="primary", use_container_width=True,
+              disabled=not ed["moves"] or len(lines) >= alts.MAX_ALTS)
+    a2.button("1手戻す", key="alt_back", on_click=alt_set, kwargs={"moves": ed["moves"][:-1], "sel": None, "promo": None},
+              disabled=not ed["moves"], use_container_width=True)
+    a3.button("入力中の読みを消す", key="alt_clear", on_click=alt_set, kwargs={"moves": [], "sel": None, "promo": None},
+              disabled=not ed["moves"], use_container_width=True)
+    if ed.get("error"):
+        st.error(ed["error"])
+    for i, line in enumerate(lines):
+        r1, r2 = st.columns([5, 1])
+        r1.markdown(f"読み{i + 1}: " + " ".join(alts.line_jp(kifu, p, line)))
+        r2.button("外す", key=f"alt_drop_{p}_{i}", on_click=drop_alt, args=(p, i), use_container_width=True)
 
 
 def unmark(p):
-    """印を取り消し、入力欄も空に戻す。"""
+    """印を取り消し、入力欄も空に戻す（迷った別の読みも消す）。"""
     marks.pop(p, None)
     drafts.pop(p, None)
-    st.session_state[f"kind_{p}"], st.session_state[f"tags_{p}"], st.session_state[f"note_{p}"] = "regret", [], ""
+    st.session_state["alt_edit"] = None
+    st.session_state[f"kind_{p}"], st.session_state[f"tags_{p}"], st.session_state[f"note_{p}"] = "bad", [], ""
 
 
 def pending() -> list[int]:
     """入力途中で、まだ印になっていない手。"""
     def differs(p, d):
         note = " ".join(d["note"].split())[:regret.MAX_NOTE]
-        tags = [] if d["kind"] == "good" else d["tags"]  # 好手は原因を持たない
+        tags, lines = d["tags"], d.get("alts", [])
         if p not in marks:
-            return bool(d["kind"] == "good" or tags or note)
-        return (d["kind"], tags, note) != (marks[p]["kind"], marks[p]["tags"], marks[p]["note"])
+            return bool(mark_kind(p, d) != "bad" or tags or note or lines)
+        m = marks[p]
+        return (mark_kind(p, d), tags, note, lines) != (mark_kind(p, m), m["tags"], m["note"], m.get("alts", []))
     return sorted(p for p, d in drafts.items() if differs(p, d))
 
 
 def marks_table():
     st.dataframe(
         pd.DataFrame([{"手数": p, "指し手": moves[p]["side"] + moves[p]["move_jp"],
-                       "印": regret.MARK_KINDS[marks[p]["kind"]],
-                       "原因": "、".join(marks[p]["tags"]), "コメント": marks[p]["note"]} for p in sorted(marks)]),
+                       "印": mark_label(p),
+                       "原因": "、".join(marks[p]["tags"]), "コメント": marks[p]["note"],
+                       "迷った別の読み": f'{len(marks[p].get("alts", []))}つ' if marks[p].get("alts") else ""}
+                      for p in sorted(marks)]),
         hide_index=True, use_container_width=True)
 
 
+def set_side():
+    st.session_state["side"] = st.session_state["side_confirm"]
+
+
 if not st.session_state["revealed"]:
-    st.markdown("#### 1. 悔しかった手と好手に印を付ける")
-    st.caption("まず自分の感覚で、悔しかった手と、好手だと思う手を選んでください。解析結果は、入力を完了してから表示します。"
-               "相手の手にも印を付けられます。"
+    st.markdown("#### 1. 自分の感覚で、手に印を付ける")
+    # まず自分の手番を確かめる（自分の手か相手の手かで、選べるラベルが変わる）。サイドバーの「自分の手番」と同じ値
+    st.session_state["side_confirm"] = st.session_state["side"]
+    st.radio("あなたは先手ですか、後手ですか？", list(regret.SIDES), horizontal=True, key="side_confirm",
+             on_change=set_side, format_func=lambda k: f'{"☗" if k == "先手" else "☖"}{k}（{kifu.names[0 if k == "先手" else 1] or k}）')
+    st.caption("自分の手には「悪手だと思った／ほかにも指す手があった／好手だと思った」、相手の手には"
+               "「悪手だと思った／予想外で驚いた／好手だと思った」の印を付けられます。原因・コメント・迷った別の読みは、どれも任意です。"
+               "解析結果は、入力を完了してから表示します。"
                + ("エンジンの解析は、裏で先に進めています。" if ms else "思考時間が0なので、エンジンの解析はしません（印とコメントだけを記録します）。"))
     c_board, c_form = st.columns([1, 1], gap="large")
     with c_board:
         ply = board_view()
     with c_form:
         if ply == 0:
-            st.info("手を進めて、悔しかった手や好手を選んでください。「次 ▶」かキーボードの → で進みます。")
+            st.info("手を進めて、印を付ける手を選んでください。「次 ▶」かキーボードの → で進みます。")
         else:
             # 入力欄は手ごとに持つ。別の手に移ると欄の値は消えるので、戻ったときは drafts を初期値にして出す
             cur = drafts.get(ply) or marks.get(ply) or {}
-            st.markdown(f"**{move_text(ply)}**")
-            kinds = list(regret.MARK_KINDS)
-            kind = st.radio("印の種類", kinds, index=kinds.index(cur.get("kind", "regret")), horizontal=True,
-                            format_func=regret.MARK_KINDS.get, key=f"kind_{ply}", on_change=keep_draft, args=(ply,))
-            good = kind == "good"
-            tags = [] if good else st.multiselect(
-                "原因（複数選べます）", regret.CAUSE_TAGS, default=cur.get("tags", []),
-                key=f"tags_{ply}", on_change=keep_draft, args=(ply,))
+            who = "自分の手" if mine(ply) else "相手の手"
+            st.markdown(f"**{move_text(ply)}**（{who}）")
+            kinds = regret.MARK_KINDS
+            kind = st.radio("この手をどう思いましたか？", kinds, index=kinds.index(mark_kind(ply, cur)),
+                            format_func=lambda k: regret.kind_label(k, moves[ply]["side"], my_side), key=f"kind_{ply}",
+                            on_change=keep_draft, args=(ply,),
+                            help="自分の手か相手の手かで、選べるラベルが変わります（上の「先手ですか、後手ですか？」で決まります）。")
+            tags = st.multiselect("思い当たる原因（任意。複数選べます）", regret.CAUSE_TAGS,
+                                  default=cur.get("tags", []), key=f"tags_{ply}", on_change=keep_draft, args=(ply,))
             note = st.text_area("コメント（任意）", value=cur.get("note", ""), max_chars=regret.MAX_NOTE,
                                 key=f"note_{ply}", on_change=keep_draft, args=(ply,),
-                                placeholder="例: 受けに回ったのが良かった" if good else "例: 攻め合いで勝てると思い込んでいた")
+                                placeholder={"good": "例: 受けに回ったのが良かった",
+                                             "other": "例: ３四飛と迷ったが、攻めを急いだ" if mine(ply) else "例: この手は全く読んでいなかった",
+                                             "bad": "例: 攻め合いで勝てると思い込んでいた" if mine(ply) else "例: ここで咎められると思った"}[kind])
+            n_alts = len(cur.get("alts", []))
+            with st.expander(f"迷った別の読み（{n_alts}つ）" if n_alts else "迷った別の読みを入れる（任意）",
+                             expanded=bool(n_alts) or (st.session_state.get("alt_edit") or {}).get("ply") == ply
+                             and bool(st.session_state["alt_edit"]["moves"])):
+                alt_editor(ply)
             if ply in pending():
                 st.caption("入力途中です（別の手に移っても残ります）。下のボタンを押すと印になります。")
-            if st.button("印を更新する" if ply in marks else "ここが好手！" if good else "ここが悔しかった！",
-                         type="primary"):
+            if st.button("印を更新する" if ply in marks else "この印を付ける", type="primary"):
                 try:
-                    same = [p for p, m in marks.items() if m["kind"] == kind and p != ply]
+                    same = [p for p, m in marks.items() if p != ply and mine(p) == mine(ply) and mark_kind(p, m) == kind]
                     if len(same) >= regret.MAX_MARKS:
-                        raise ValueError(f"{regret.MARK_KINDS[kind]}の印は1局に{regret.MAX_MARKS}個までです")
-                    marks[ply] = regret.clean_mark(ply, tags, note, len(kifu.moves), kind)
+                        raise ValueError(f"「{mark_label(ply, kind)}」の印は1局に{regret.MAX_MARKS}個までです")
+                    lines = (drafts.get(ply) or marks.get(ply) or {}).get("alts", [])
+                    marks[ply] = regret.clean_mark(ply, tags, note, len(kifu.moves), kind,
+                                                   alts=[alts.clean_line(kifu, ply, a) for a in lines])
                     drafts.pop(ply, None)
                     st.rerun()
                 except ValueError as e:
@@ -790,7 +1015,7 @@ if not st.session_state["revealed"]:
         st.divider()
         if pending():
             st.warning("入力途中で、まだ印になっていない手があります: " + "、".join(f"{p}手目" for p in pending())
-                       + "。印にするには、その手で「ここが悔しかった！」か「ここが好手！」を押してください。")
+                       + "。印にするには、その手で「この印を付ける」を押してください。")
         if st.button("入力を完了して解析結果を見る" if ms else "入力を完了して記録する", type="primary", use_container_width=True):
             # 裏の処理がこの対局のふりかえりを持っていなければ（保存した対局の続きなど）、画面側で自動で始める
             st.session_state.update(revealed=True, auto_review=not (pipe and pipe["key"] == key))
@@ -803,7 +1028,8 @@ if not st.session_state["revealed"]:
             else:
                 st.session_state["confirm"] = {"how": "close"}
             st.rerun()
-        st.caption("完了すると、エンジンの解析結果（悪手候補と好手候補）と、あなたの印とのずれを表示し、AIコーチのふりかえりも自動で始めます。完了後は印を変更できません。"
+        st.caption("完了すると、6つのラベルごとに、エンジンの解析結果（悪手候補と好手候補、その後の読み筋）とあなたの印を並べて表示し、"
+                   "AIコーチのふりかえりも自動で始めます。"
                    + ("" if marks else "印が無いまま進むこともできます。"))
     st.stop()
 
@@ -826,7 +1052,60 @@ if st.session_state.get("key") != key:
     st.session_state.update(key=key, rows=pipe["rows"], coach=pipe["coach"], chat=[], actions=[], saved=None, note=None,
                             job=None)
 rows = st.session_state["rows"]
-gap = regret.compare(rows, list(marks.values()), my_side) if rows else None
+
+
+def alt_missing() -> bool:
+    return any(alts.key(p, line) not in alt_cache["rows"] for p, line in alts.lines_of(list(marks.values())))
+
+
+def eval_alts():
+    """迷った別の読みのうち、まだ評価していないものを裏で評価する（裏の処理がこの対局で評価するときは任せる）。"""
+    if not rows or not alt_missing() or alt_cache["busy"] or (pipe and pipe["key"] == key and not pipe["done"]):
+        return
+    alt_cache["busy"] = True
+    marks_ = list(marks.values())
+
+    def work():
+        try:
+            alts.evaluate(get_client(), kifu, marks_, ms, alt_cache["rows"])
+        finally:
+            alt_cache["busy"] = False
+    threading.Thread(target=work, daemon=True).start()
+
+
+eval_alts()
+alt_sums = alts.summaries(kifu, list(marks.values()), rows, alt_cache["rows"]) if rows else {}
+gap = regret.compare(rows, list(marks.values()), my_side, alt_sums) if rows else None
+
+
+def ext_wanted() -> list[int]:
+    """読み筋を伸ばす手: いま局面図に出している手と、ノートに載る手（6つのラベルで印を付けた手と、自分の悪手候補）。"""
+    if not gap:
+        return []
+    plies = [cur_ply()] + [m["ply"] for k in report.CARD_GROUPS for m in gap[k]]
+    return [p for p in dict.fromkeys(plies) if p > 0]
+
+
+def ext_missing() -> bool:
+    return any(ext_key(p, w) not in ext_cache["rows"] for p in ext_wanted() for w in ("best", "actual"))
+
+
+def extend_lines():
+    """読み筋を伸ばす（裏で動かす。エンジンを1つの読み筋につき最大数回呼ぶ）。"""
+    if not rows or ext_cache["busy"] or not ext_missing():
+        return
+    ext_cache["busy"] = True
+    plies = ext_wanted()
+
+    def work():
+        try:
+            extend_rows(get_client(), kifu, rows, plies, ext_cache["rows"])
+        finally:
+            ext_cache["busy"] = False
+    threading.Thread(target=work, daemon=True).start()
+
+
+extend_lines()
 st.button("ふりかえりをやり直す（印を付け直す）", on_click=lambda: st.session_state.update(redo=True),
           help="印の入力からやり直します。エンジンの解析結果は残ります。")
 if st.session_state.get("redo"):
@@ -855,12 +1134,12 @@ if not rows:  # 思考時間 0。エンジンで解析せず、印とコメン�
             st.caption("印はありません。")
     st.stop()
 
-if src["consent"] and src.get("summary") != (key, my_side):rows = st.session_state["rows"]
-gap = regret.compare(rows, list(marks.values()), my_side)
-if src["consent"] and src.get("summary") != (key, my_side):  # 同意があれば、この対局の集計を記録に加える（手番を変えたら書き直す）
+alt_done = len(alt_cache["rows"])  # 評価が増えたら保存し直す
+ext_done = len(ext_cache["rows"])  # 伸ばした読み筋が増えたら保存し直す（ノートも作り直す）
+if src["consent"] and src.get("summary") != (key, my_side, alt_done, ext_done):  # 同意があれば、この対局の集計を記録に加える（手番を変えたら書き直す）
     try:
         save_result()
-        src["summary"] = (key, my_side)
+        src["summary"] = (key, my_side, alt_done, ext_done)
         history(refresh=True)
     except Exception as e:
         src["save_error"] = str(e)
@@ -891,64 +1170,182 @@ if st.session_state.get("job") and st.session_state["job"]["done"]:
 df = pd.DataFrame(rows)
 df["judge"] = [r["label"] or ("好手候補" if r.get("good") else "") for r in rows]  # グラフの点
 
-left, right = st.columns([3, 2], gap="large")
-with left:
-    st.markdown("#### 感覚とエンジンのずれ")
-    if not any(m["kind"] == "regret" for m in marks.values()):
-        st.info("悔しかった手の印を付けずに完了しました。下の「データだけ」は、エンジンが見つけたあなたの悪手候補です。")
+LINE_NAMES = {"best": "最善手からの読み筋", "actual": "実戦の手からの読み筋"}
 
-    def gap_rows(kind, items):
-        return [{"区分": kind, "手数": m["ply"], "指し手": m["side"] + m["move_jp"],
-                 "エンジンの判定": regret.verdict(m),
-                 "勝率の下落": m["winrate_drop"], "最善手": m["best_before_jp"],
-                 "原因": "、".join(m.get("tags", [])), "コメント": m.get("note", "")} for m in items]
-    m1, m2, m3 = st.columns(3)
-    m1.metric("一致", len(gap["match"]), help="悔しかった手が、エンジンでも悪手・疑問手・緩手")
-    m2.metric("感覚だけ", len(gap["feeling_only"]), help="悔しかったが、エンジンでは勝率がほとんど下がっていない")
-    m3.metric("データだけ", len(gap["data_only"]), help="エンジンでは自分の悪手候補だが、悔しかった手の印を付けていない")
-    gap_all = (gap_rows("一致", gap["match"]) + gap_rows("感覚だけ", gap["feeling_only"])
-               + gap_rows("データだけ", gap["data_only"]))
-    if gap_all:
-        st.dataframe(pd.DataFrame(gap_all), hide_index=True, use_container_width=True,
-                     column_config={"勝率の下落": st.column_config.NumberColumn(format="percent")},
-                     key="gap_table", selection_mode="single-row", on_select=lambda: pick_row("gap_table", [g["手数"] for g in gap_all]))
+
+def open_lines(p, which="best"):
+    """読み筋のポップアップを開く（開く手と、最初に見せる読み筋）。"""
+    st.session_state.update(line_pop=p, line_which=which, line_step=0)
+
+
+def close_lines():
+    st.session_state["line_pop"] = None
+
+
+def line_step(d, n):
+    st.session_state["line_step"] = min(max(st.session_state.get("line_step", 0) + d, 0), n)
+
+
+@st.dialog("読み筋を盤で見る", width="large", on_dismiss=close_lines)
+def line_dialog():
+    """最善手・実戦の手からの読み筋を、1手ずつ盤で見る（エンジンは呼ばない。伸ばした読み筋があればそれを使う）。"""
+    ss = st.session_state
+    p = ss["line_pop"]
+    r = next((r for r in rows if r["ply"] == p), None)
+    pos = line_positions(kifu, r, ext_cache["rows"]) if r else {"best": [], "actual": []}
+    choices = [w for w in LINE_NAMES if pos[w]]
+    st.markdown(f"**{move_text(p)}** を指す直前の局面から（エンジンの判定: {regret.verdict(r) if r else '解析なし'}）")
+    if not choices:
+        st.info("この手には読み筋がありません。")
+        return
+    if ss.get("line_which") not in choices:
+        ss["line_which"] = choices[0]
+    which = st.radio("読み筋", choices, format_func=LINE_NAMES.get, horizontal=True, key="line_which",
+                     on_change=lambda: ss.update(line_step=0), label_visibility="collapsed")
+    steps = pos[which]
+    n = len(steps) - 1
+    i = min(ss.get("line_step", 0), n)
+    c1, c2, c3, c4 = st.columns([1, 1, 3, 1])
+    c1.button("最初", key="line_first", on_click=line_step, args=(-n, n), disabled=i == 0, use_container_width=True)
+    c2.button("◀ 前", key="line_prev", on_click=line_step, args=(-1, n), disabled=i == 0, use_container_width=True)
+    c4.button("次 ▶", key="line_next", on_click=line_step, args=(1, n), disabled=i == n, use_container_width=True)
+    c3.markdown(f"**{i}手目 / {n}手**　{steps[i]['move_jp'] or '（指す前の局面）'}")
+    st.image(position_svg(steps[i]["sfen"], steps[i]["move_usi"], steps[i]["before"]), width=460)
+    st.markdown("　".join((f"**[{k}] {s['move_jp']}**" if k == i else f"[{k}] {s['move_jp']}")
+                         for k, s in enumerate(steps) if k))
+    st.caption("色の付いたマスが、いま指した手です。読み筋は、エンジンが読んだ想定手順です（その先の展開の一例。最大12手）。"
+               "読み筋の続きをエンジンで読んでいる途中なら、閉じて開き直すと伸びていることがあります。")
+
+
+# PC では、上段の左に形勢グラフと局面図、右にAIコーチを並べ、表はその下に全幅で置く（発案者の指示 2026-10-14。空白を作らない）。
+# スマホの幅では Streamlit が横並びを縦に積むので、局面図 → AIコーチ → 表 の順になる
+if st.session_state.get("coach_pick") is not None:  # 講評の「N手目」が押された（手を選ぶ欄を描く前に移す）
+    st.session_state["mark_ply"] = st.session_state.pop("coach_pick")
+top_l, right = st.columns([3, 2], gap="large")
+bottom = st.container()
+with bottom:
+    st.markdown("#### ラベルごとのふりかえり")
+    if not regret.has_marks(gap):
+        st.info("印を付けずに完了しました。各ラベルの「データだけ」は、エンジンが見つけた悪手候補・好手候補です。")
+    secs = regret.sections(gap)
+    pct_cols = {c: st.column_config.NumberColumn(format="percent") for c in ("勝率の下落", "次善手との差")}
+    for sec, tab in zip(secs, st.tabs([f'{s["title"]}（{len(s["items"])}）' for s in secs])):
+        with tab:
+            good_sec = sec["kind"] == "good"
+            st.caption("　".join(f"{name}: {tip}" if name else tip for _, name, tip in sec["groups"]))
+            if sec["counts"]:
+                for col, (name, n) in zip(st.columns(len(sec["counts"])), sec["counts"]):
+                    col.metric(name, n)
+            if not sec["items"]:
+                st.caption("この対局にはありません。")
+                continue
+            table = [{"区分": m["group"] or "印", "手数": m["ply"], "指し手": m["side"] + m["move_jp"],
+                      "エンジンの判定": regret.verdict(m), "勝率の下落": m["winrate_drop"],
+                      **({"次善手との差": m["good_gap"]} if good_sec else {}), "最善手": m["side"] + m["best_before_jp"],
+                      "原因": "、".join(m.get("tags", [])), "コメント": m.get("note", "")} for m in sec["items"]]
+            st.dataframe(pd.DataFrame(table), hide_index=True, use_container_width=True, column_config=pct_cols,
+                         key=f'sec_{sec["key"]}', selection_mode="single-row",
+                         on_select=lambda k=f'sec_{sec["key"]}', t=table: pick_row(k, [g["手数"] for g in t]))
+            # 局面と、その後の読み筋（印を付けた手と、自分の悪手候補。ふりかえりノートと同じ手）
+            shown_items = [m for m in sec["items"] if m["group_key"] in report.CARD_GROUPS]
+            for m in shown_items:
+                r_ = next((r for r in rows if r["ply"] == m["ply"]), None)
+                lines = lines_jp(kifu, r_, ext_cache["rows"]) if r_ else {"best": [], "actual": []}
+                st.markdown(f'**{m["ply"]}手目 {m["side"]}{m["move_jp"]}**（{m["group"] or "印"}・{regret.verdict(m)}、'
+                            f'勝率の下落 {m["winrate_drop"]:.0%}）')
+                out = [f"- 最善手からの読み筋（{len(lines['best'])}手）: " + " ".join(lines["best"])] if lines["best"] else []
+                if lines["actual"] and not m["was_best"]:
+                    out.append(f"- 実戦の手からの読み筋（{len(lines['actual'])}手）: " + " ".join(lines["actual"]))
+                out += [f"- 迷った読み{i + 1}: " + alts.describe(a) for i, a in enumerate(m.get("alts", []))]
+                st.markdown("\n".join(out) if out else "- 読み筋はありません。")
+                if lines["best"] or lines["actual"]:
+                    st.button("読み筋を盤で見る", key=f'lp_{sec["key"]}_{m["ply"]}', on_click=open_lines, args=(m["ply"],),
+                              help="最善手・実戦の手からの読み筋を、ポップアップで1手ずつ盤で確かめます。")
+            if shown_items:
+                st.caption("表の行を押すと、その手の局面を上の局面図に出します。読み筋は、エンジンが読んだ想定手順です（その先の展開の一例。最大12手）。")
+            if good_sec:
+                st.caption(f"好手候補は、エンジンの最善手を指し、次善手なら勝率が{GOOD_GAP:.0%}以上低かった手です。"
+                           "取り返すしかない局面の当然の手も入ります。")
     st.caption("区分は決まった規則で分けています（AIの判断ではありません）。勝率の下落は指した側から見た値で、"
-               "エンジンによる参考値です。")
+               "エンジンによる参考値です。思考時間が短いと変わることがあります。")
 
-    st.markdown("#### 形勢グラフ（先手の勝率）")
-    base = alt.Chart(df).encode(x=alt.X("ply:Q", title="手数"))
-    line = base.mark_line().encode(
-        y=alt.Y("winrate_sente:Q", title="先手勝率", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(format="%")),
-        tooltip=["ply", "side", "move_jp", alt.Tooltip("winrate_sente:Q", format=".0%")],
-    )
-    points = base.transform_filter(alt.datum.judge != "").mark_point(filled=True, size=90).encode(
-        y="winrate_sente:Q",
-        color=alt.Color("judge:N", title="判定",
-                        scale=alt.Scale(domain=["悪手", "疑問手", "緩手", "好手候補"],
-                                        range=["#c0392b", "#e08e0b", "#3f8f6b", "#2e6fba"])),
-        tooltip=["ply", "side", "move_jp", "judge", "best_before_jp"],
-    )
-    mid = alt.Chart(pd.DataFrame({"y": [0.5]})).mark_rule(strokeDash=[4, 4], opacity=0.5).encode(y="y:Q")
-    # グラフを押すと、いちばん近い手を選ぶ（見えない点を全手に置いて、押した位置を拾う）
-    pick = alt.selection_point(name="pick", fields=["ply"], on="click", nearest=True, empty=False)
-    hit = base.mark_point(size=80, opacity=0).encode(y="winrate_sente:Q").add_params(pick)
-    now = alt.Chart(pd.DataFrame({"ply": [cur_ply()]})).mark_rule(color="#888", strokeWidth=1.5).encode(x="ply:Q")
-    st.altair_chart((mid + now + line + points + hit).properties(height=300), use_container_width=True,
-                    key="wr_chart", on_select=pick_point)
+    if alts.lines_of(list(marks.values())):
+        st.markdown("#### 迷った別の読み")
 
-    st.markdown("#### 局面図")
-    st.caption("形勢グラフ、または上下の表（ずれ・悪手候補・好手）の行を押すと、その手の局面を表示します。グラフの縦線が表示中の手です。")
-    shown = board_view()
-    r = next((r for r in rows if r["ply"] == shown), None)
-    if r:
-        st.caption(f'エンジンの判定: {regret.verdict(r)}（勝率の下落 {r["winrate_drop"]:.0%}）　'
-                   f'エンジンの最善手: {r["side"]}{r["best_before_jp"]}')
-        lines = lines_jp(kifu, r)
-        for label, line in (("最善手からの読み筋", lines["best"]), ("実戦の手からの読み筋", lines["actual"])):
-            if line:
-                st.caption(f"{label}: " + " ".join(line))
-        if lines["best"] or lines["actual"]:
-            st.caption("読み筋は、エンジンが短い時間で読んだ想定手順です（その先の展開の一例）。")
+        @st.fragment(run_every=1.0 if alt_missing() else None)
+        def alt_view():
+            sums = alts.summaries(kifu, list(marks.values()), rows, alt_cache["rows"])
+            if len(alt_cache["rows"]) != alt_done or (
+                    alt_missing() and not alt_cache["busy"] and not (pipe and pipe["key"] == key and not pipe["done"])):
+                st.rerun()  # 評価が進んだ（ノートと保存に入れる）か、評価を始める。画面全体を描き直す
+            for p in sorted(sums):
+                st.markdown(f"**{move_text(p)}**（{mark_label(p)}）")
+                for i, a in enumerate(sums[p]):
+                    st.markdown(f"- 読み{i + 1}: " + alts.describe(a))
+            if alt_missing():
+                st.caption("迷った別の読みを、エンジンで評価しています…（1つの読みに、手数 + 1 回の解析をします）")
+            elif sums.keys() and any(a.get("steps") for v in sums.values() for a in v):
+                with st.expander("読みの1手ずつの判定"):
+                    st.dataframe(pd.DataFrame([{"手数": p, "読み": i + 1, "指し手": stp["move_jp"],
+                                                "エンジンの判定": stp["label"] or ("最善手と同じ" if stp["was_best"] else "判定なし"),
+                                                "勝率の下落": stp["winrate_drop"], "最善手": stp["best_jp"]}
+                                               for p in sorted(sums) for i, a in enumerate(sums[p])
+                                               for stp in a.get("steps", [])]),
+                                 hide_index=True, use_container_width=True,
+                                 column_config={"勝率の下落": st.column_config.NumberColumn(format="percent")})
+            st.caption("勝率は、印を付けた手を指す側から見た値です。読みの終わりの局面をエンジンで読み、実戦の手の後の局面と比べています"
+                       f"（差が{alts.CLOSE:.0%}未満なら「同じくらい」。決まった規則で、AIの判断ではありません）。")
+        alt_view()
+
+    with top_l:
+        st.markdown("#### 形勢グラフ（先手の勝率）")
+        base = alt.Chart(df).encode(x=alt.X("ply:Q", title="手数"))
+        line = base.mark_line().encode(
+            y=alt.Y("winrate_sente:Q", title="先手勝率", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(format="%")),
+            tooltip=["ply", "side", "move_jp", alt.Tooltip("winrate_sente:Q", format=".0%")],
+        )
+        points = base.transform_filter(alt.datum.judge != "").mark_point(filled=True, size=90).encode(
+            y="winrate_sente:Q",
+            color=alt.Color("judge:N", title="判定",
+                            scale=alt.Scale(domain=["悪手", "疑問手", "緩手", "好手候補"],
+                                            range=["#c0392b", "#e08e0b", "#3f8f6b", "#2e6fba"])),
+            tooltip=["ply", "side", "move_jp", "judge", "best_before_jp"],
+        )
+        mid = alt.Chart(pd.DataFrame({"y": [0.5]})).mark_rule(strokeDash=[4, 4], opacity=0.5).encode(y="y:Q")
+        # グラフを押すと、いちばん近い手を選ぶ（見えない点を全手に置いて、押した位置を拾う）
+        pick = alt.selection_point(name="pick", fields=["ply"], on="click", nearest=True, empty=False)
+        hit = base.mark_point(size=80, opacity=0).encode(y="winrate_sente:Q").add_params(pick)
+        now = alt.Chart(pd.DataFrame({"ply": [cur_ply()]})).mark_rule(color="#888", strokeWidth=1.5).encode(x="ply:Q")
+        st.altair_chart((mid + now + line + points + hit).properties(height=300), use_container_width=True,
+                        key="wr_chart", on_select=pick_point)
+
+        st.markdown("#### 局面図")
+        st.caption("形勢グラフ、AIコーチの講評の「N手目」、または下の表（ラベルごとのふりかえり・悪手候補）の行を押すと、"
+                   "その手の局面を表示します。グラフの縦線が表示中の手です。")
+        shown = board_view()
+        r = next((r for r in rows if r["ply"] == shown), None)
+        if r:
+            st.caption(f'エンジンの判定: {regret.verdict(r)}（勝率の下落 {r["winrate_drop"]:.0%}）　'
+                       f'エンジンの最善手: {r["side"]}{r["best_before_jp"]}')
+            @st.fragment(run_every=1.0 if ext_missing() else None)
+            def line_view():
+                if len(ext_cache["rows"]) != ext_done or (ext_missing() and not ext_cache["busy"]):
+                    st.rerun()  # 読み筋が伸びた（ノートと保存にも入れる）か、伸ばす仕事を始める
+                lines = lines_jp(kifu, r, ext_cache["rows"])
+                for label, line in (("最善手からの読み筋", lines["best"]), ("実戦の手からの読み筋", lines["actual"])):
+                    if line:
+                        st.markdown(f"**{label}**（{len(line)}手）: " + " ".join(line))
+                if ext_missing():
+                    st.caption("読み筋の続きを、エンジンで読んでいます…")
+                if lines["best"] or lines["actual"]:
+                    if st.button("読み筋を盤で見る", key="lp_main",
+                                 help="最善手・実戦の手からの読み筋を、ポップアップで1手ずつ盤で確かめます。"):
+                        open_lines(r["ply"])
+                        st.rerun()
+                if not ext_missing() and (lines["best"] or lines["actual"]):
+                    st.caption("読み筋は、エンジンが読んだ想定手順です（その先の展開の一例）。短く途切れたときは、"
+                               "終わりの局面を読み直して続きをつなげています（最大12手）。")
+            line_view()
 
     st.markdown("#### 悪手候補")
     bad = df[df.label != ""][["ply", "side", "move_jp", "label", "winrate_drop", "best_before_jp"]]
@@ -963,28 +1360,6 @@ with left:
             key="bad_table", selection_mode="single-row", on_select=lambda: pick_row("bad_table", [int(p) for p in bad.ply]),
         )
 
-    st.markdown("#### 好手")
-    good_kinds = [("一致", "good_match", "好手の印を付けた手が、エンジンの最善手と同じ"),
-                  ("感覚だけ", "good_feeling_only", "好手の印を付けたが、エンジンの最善手とは違う"),
-                  ("データだけ", "good_data_only", "エンジンでは自分の好手候補だが、好手の印を付けていない"),
-                  ("相手の好手候補", "good_opponent", "エンジンでは相手の好手候補で、好手の印を付けていない")]
-    for col, (kind, k, tip) in zip(st.columns(4), good_kinds):
-        col.metric(kind, len(gap[k]), help=tip)
-    good_all = sorted(({"区分": kind, "手数": m["ply"], "指し手": m["side"] + m["move_jp"],
-                        "エンジンの判定": regret.verdict(m), "次善手との差": m["good_gap"],
-                        "勝率の下落": m["winrate_drop"], "最善手": m["best_before_jp"], "コメント": m.get("note", "")}
-                       for kind, k, _ in good_kinds for m in gap[k]), key=lambda g: g["手数"])
-    if good_all:
-        st.dataframe(pd.DataFrame(good_all), hide_index=True, use_container_width=True,
-                     column_config={c: st.column_config.NumberColumn(format="percent") for c in ("次善手との差", "勝率の下落")},
-                     key="good_table", selection_mode="single-row",
-                     on_select=lambda: pick_row("good_table", [g["手数"] for g in good_all]))
-    else:
-        st.info("好手の印も、エンジンの好手候補もありませんでした。")
-    st.caption(f"好手候補は、エンジンの最善手を指し、次善手なら勝率が{GOOD_GAP:.0%}以上低かった手です（決まった規則で、AIの判断ではありません）。"
-               "「次善手との差」は、指す前の局面での最善手と次善手の勝率の差です。取り返すしかない局面の当然の手も入ります。"
-               "エンジンによる参考値で、思考時間が短いと変わることがあります。")
-
     buf = io.StringIO()
     df.drop(columns="judge").to_csv(buf, index=False)
     st.download_button("解析結果をCSVでダウンロード", buf.getvalue().encode("utf-8-sig"),
@@ -994,9 +1369,9 @@ with left:
     chat = st.session_state["chat"]  # [(user, 依頼), (assistant, 講評), (user, 質問), (assistant, 回答), ...]
     review = "" if not chat or chat[1][1].startswith(COACH_ERROR) else chat[1][1]
     qa = [(chat[i][1], chat[i + 1][1]) for i in range(2, len(chat) - 1, 2) if not chat[i + 1][1].startswith(COACH_ERROR)]
-    note_key = (key, my_side, review, tuple(qa))
+    note_key = (key, my_side, review, tuple(qa), alt_done, ext_done)
     if (st.session_state.get("note") or (None,))[0] != note_key:
-        d = report.collect(kifu, rows, gap, coach_text=review, qa=qa,
+        d = report.collect(kifu, rows, gap, coach_text=review, qa=qa, ext=ext_cache["rows"],
                            created=datetime.now(JST).strftime("%Y-%m-%d 作成"))
         st.session_state["note"] = (note_key, report.to_pdf(d, kifu), report.to_html(d, kifu))
     n1, n2 = st.columns(2)
@@ -1005,9 +1380,12 @@ with left:
                        use_container_width=True)
     with n2:
         st.html(report.print_link(st.session_state["note"][2]), unsafe_allow_javascript=True)
-    st.caption("ずれの表、形勢グラフ、局面図、好手の表をA4にまとめます。エンジンの最善手は、後ろのページに図つきの回答として載せます。「印刷用ページを開く」は新しいタブで開きます。"
+    st.caption("6つのラベルごとの表と局面図、形勢グラフをA4にまとめます。エンジンの最善手とその後の読み筋は、後ろのページに図つきの回答として載せます。「印刷用ページを開く」は新しいタブで開きます。"
                + ("AIコーチのふりかえりも入っています。" if review else "AIコーチにふりかえってもらうと、その文章も入ります。")
                + (f"AIコーチへの質問と回答（{len(qa)}件）は末尾に入っています。" if qa else "AIコーチへの質問と回答は、末尾に入ります。"))
+
+if st.session_state.get("line_pop"):
+    line_dialog()
 
 # ---- 3. AIコーチ ----
 with right:
@@ -1048,11 +1426,15 @@ with right:
             ask(REVIEW, "AIコーチが局面を選んで調べています…")
             st.rerun()
 
-    for role, text in st.session_state["chat"]:
-        if role == "user" and text == REVIEW:
-            continue
-        with st.chat_message(role):
-            st.markdown(text)
+    if st.session_state["chat"]:
+        # 講評の「N手目」を押すと、横の局面図をその手にする。局面図で選んでいる手に触れている段落には色が付く
+        ev = coach_text(messages=coach_view.messages(st.session_state["chat"], len(kifu.moves), REVIEW, COACH_ERROR),
+                        current=cur_ply(), key="coach_text", default=None)
+        if ev and ev.get("n") != st.session_state.get("coach_seen"):
+            st.session_state["coach_seen"] = ev["n"]
+            st.session_state["coach_pick"] = int(ev["ply"])
+            st.rerun()
+        st.caption("講評の「N手目」を押すと、局面図がその手に移ります。局面図で選んでいる手に触れている段落には色が付きます。")
 
     @st.fragment(run_every=1.0 if job or auto_pending else None)
     def waiting():

@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import html
 import io
+import json
 import re
 from pathlib import Path
 
@@ -20,24 +21,19 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Flowable, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table
 
-from . import regret
+from . import alts as alts_mod, regret, trend as trend_mod
 from .kifu_analysis import GOOD_GAP, Kifu
-from .service import board_after, board_svg, lines_jp
+from .service import PROMOTED_FILL, board_after, board_svg, lines_jp, to_svg
 
 FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
 FONT, FONT_B = "BIZUDGothic", "BIZUDGothic-Bold"
 
-KINDS = [("match", "一致"), ("feeling_only", "感覚だけ"), ("data_only", "データだけ")]
-GOOD_KINDS = [("good_match", "一致"), ("good_feeling_only", "感覚だけ"), ("good_data_only", "データだけ"),
-              ("good_opponent", "相手の好手候補")]
-GOOD_HEAD = ["区分", "手数", "指し手", "エンジンの判定", "次善手との差", "コメント"]
-GOOD_NOTE = ("一致は、好手の印を付けた手がエンジンの最善手と同じ。感覚だけは、好手の印を付けたが最善手とは違う。"
-             "データだけと相手の好手候補は、好手の印を付けていないエンジンの好手候補。"
+GOOD_SECTIONS = ("my_good", "opp_good")  # 好手の2つのラベルは、実戦の手が最善手だったかが分かるので、回答より後ろに置く
+CARD_GROUPS = set(regret.MARKED_KEYS) | {"data_only"}  # 局面図を載せる区分: 本人が印を付けた手と、自分の悪手候補
+GOOD_NOTE = ("一致は、好手だと思った手がエンジンの最善手と同じ。感覚だけは、好手だと思ったが最善手とは違う。"
+             "データだけは、好手だと思った印を付けていないエンジンの好手候補。"
              f"好手候補は、最善手を指し、次善手なら勝率が{GOOD_GAP:.0%}以上低かった手です（決まった規則で、AIの判断ではありません）。"
              "取り返すしかない局面の当然の手も入ります。エンジンによる参考値です。")
-KIND_HELP = {"一致": "悔しかった手が、エンジンでも悪手・疑問手・緩手",
-             "感覚だけ": "悔しかったが、エンジンでは勝率がほとんど下がっていない",
-             "データだけ": "エンジンでは自分の悪手候補だが、悔しかった手の印を付けていない"}
 RULE_NOTE = ("区分は決まった規則で分けています（AIの判断ではありません）。勝率の下落は指した側から見た値で、"
              "エンジン（やねうら王 + 水匠5）による参考値です。")
 QA_NOTE = "AIコーチへの質問と、AI（Gemini）の回答です。回答はエンジンで確かめた結果をもとにしていますが、AIが書いた文章です。"
@@ -49,37 +45,47 @@ ANSWER_NOTE = ("図は、エンジン（やねうら王 + 水匠5）の最善手
                "読み筋は、エンジンが短い時間で読んだ想定手順です（その先の展開の一例）。")
 MARK_FILL = {"悪手": "#000000", "疑問手": "#888888", "緩手": "#ffffff"}  # 白黒印刷でも区別できる濃淡
 HEAD = ["区分", "手数", "指し手", "エンジンの判定", "勝率の下落", "原因", "コメント"]  # 最善手は「回答」に書く
+GOOD_HEAD = ["区分", "手数", "指し手", "エンジンの判定", "次善手との差", "コメント"]
 MEMO = "気づいたこと・次に直すこと"
 
 
 # ---------------- 内容（PDFとHTMLで共通） ----------------
 
 def collect(kifu: Kifu, rows: list[dict], gap: dict, title: str = "", coach_text: str = "",
-            created: str = "", qa: list[tuple[str, str]] = ()) -> dict:
+            created: str = "", qa: list[tuple[str, str]] = (), ext: dict | None = None) -> dict:
     """rows: 全手解析の行。gap: regret.compare の結果。coach_text: AIコーチの講評（Markdown。無ければ空）。
 
     qa: AIコーチへの（質問, 回答）の並び。ノートの末尾に載せる。
+    sections は6つのラベル（regret.SECTIONS の順）。各ラベルの rows が表、cards が局面図つきの欄（印を付けた手と自分の悪手候補）。
     """
     by_ply = {r["ply"]: r for r in rows}
 
-    def item(m, label):
+    def card(m, sec):
         r = by_ply[m["ply"]]
-        lines = lines_jp(kifu, r) if "move_usi" in r else {"best": [], "actual": []}
-        return {**m, "kind": label, "best_usi": r["best_before_usi"],
+        lines = lines_jp(kifu, r, ext) if "move_usi" in r else {"best": [], "actual": []}  # ext: 伸ばした読み筋
+        return {**m, "kind": sec["title"] + (f'／{m["group"]}' if m["group"] else ""), "best_usi": r["best_before_usi"],
                 "best_line": " ".join(lines["best"]), "actual_line": " ".join(lines["actual"])}
-    items = sorted((item(m, label) for key, label in KINDS for m in gap[key]), key=lambda m: m["ply"])
+    secs = []
+    for sec in regret.sections(gap):
+        items = [{**m, "kind": m["group"] or "印"} for m in sec["items"]]
+        secs.append({"key": sec["key"], "title": sec["title"], "counts": sec["counts"], "total": len(items),
+                     "help": [(name, tip) for _, name, tip in sec["groups"]],
+                     "rows": items, "cards": [card(m, sec) for m in sec["items"] if m["group_key"] in CARD_GROUPS]})
     return {
         "title": title, "created": created, "plies": len(kifu.moves),
         "names": [kifu.names[0] or "先手", kifu.names[1] or "後手"],
         "my_side": {"▲": "先手", "△": "後手"}.get(gap["my_side"], ""),
-        "counts": [(label, len(gap[key])) for key, label in KINDS],
-        "items": items,
-        "good": sorted(({**m, "kind": label} for key, label in GOOD_KINDS for m in gap.get(key, [])),
-                       key=lambda m: m["ply"]),
+        "sections": secs,
+        "items": [c for sec in secs for c in sec["cards"]],
         "series": [(r["ply"], r["winrate_sente"], r["label"]) for r in rows],
         "coach": md_blocks(coach_text),
         "qa": [(" ".join(q.split()), md_blocks(a)) for q, a in qa],
     }
+
+
+def count_text(sec: dict) -> str:
+    """ラベルの件数の表示（例: 「一致 1／感覚だけ 0／データだけ 2」。区分の無いラベルは「2手」）。"""
+    return "／".join(f"{name} {n}" for name, n in sec["counts"]) if sec["counts"] else f'{sec["total"]}手'
 
 
 verdict = regret.verdict
@@ -206,8 +212,10 @@ def _legend_html() -> str:
 
 
 def _facts(m: dict) -> list[tuple[str, str]]:
-    """局面ごとの欄に出す項目（見出し, 値）。エンジンの最善手はここに出さず、回答に回す。"""
+    """局面ごとの欄に出す項目（見出し, 値）。エンジンの最善手と、迷った読みの評価はここに出さず、回答に回す。"""
     out = [("エンジンの判定", f'{verdict(m)}（勝率の下落 {pct(m["winrate_drop"])}）')]
+    if m.get("alts"):
+        out.append(("迷った別の読み（本人の入力）", " / ".join(" ".join(a.get("line_jp", [])) for a in m["alts"])))
     if m.get("tags"):
         out.append(("原因（本人の入力）", "、".join(m["tags"])))
     if m.get("note"):
@@ -218,10 +226,11 @@ def _facts(m: dict) -> list[tuple[str, str]]:
 def _answer_facts(m: dict) -> list[tuple[str, str]]:
     actual = f'{m["side"]}{m["move_jp"]}（{verdict(m)}、勝率の下落 {pct(m["winrate_drop"])}）'
     best_line = [("最善手からの読み筋", m["best_line"])] if m.get("best_line") else []
+    alt = [("迷った別の読み", alts_mod.describe(a)) for a in m.get("alts", [])]
     if m["was_best"]:
-        return [("エンジンの最善手", f'{m["side"]}{m["best_before_jp"]}（実戦の手と同じ）'), *best_line]
+        return [("エンジンの最善手", f'{m["side"]}{m["best_before_jp"]}（実戦の手と同じ）'), *best_line, *alt]
     actual_line = [("実戦の手からの読み筋", m["actual_line"])] if m.get("actual_line") else []
-    return [("エンジンの最善手", m["side"] + m["best_before_jp"]), *best_line, ("実戦の手", actual), *actual_line]
+    return [("エンジンの最善手", m["side"] + m["best_before_jp"]), *best_line, ("実戦の手", actual), *actual_line, *alt]
 
 
 def answer_board(kifu: Kifu, m: dict) -> tuple[cshogi.Board, int | None]:
@@ -245,37 +254,55 @@ def to_html(d: dict, kifu: Kifu) -> str:
          '<div class="bar"><button onclick="window.print()">印刷する</button>'
          "<span>印刷画面で用紙サイズ A4 を選んでください。</span></div>",
          f"<h1>ふりかえりノート</h1><p>{esc(meta_line(d))}</p>",
-         "<h2>感覚とエンジンのずれ</h2><div class='counts'>"]
-    o += [f"<div><b>{n}</b>{lab}<br><span class='note'>{KIND_HELP[lab]}</span></div>" for lab, n in d["counts"]]
-    o.append("</div>")
-    if d["items"]:
-        o.append("<table><thead><tr>" + "".join(f"<th>{h}</th>" for h in HEAD) + "</tr></thead><tbody>")
-        o += ["<tr>" + "".join(f"<td>{esc(c)}</td>" for c in table_row(m)) + "</tr>" for m in d["items"]]
-        o.append("</tbody></table>")
-    else:
-        o.append("<p>印を付けた手も、しきい値を超える自分の悪手候補もありませんでした。</p>")
-    o.append(f"<p class='note'>{RULE_NOTE}</p>")
+         "<h2>ラベルごとの数</h2><table><thead><tr><th>ラベル</th><th>数</th></tr></thead><tbody>"]
+    o += [f"<tr><td>{esc(sec['title'])}</td><td>{esc(count_text(sec))}</td></tr>" for sec in d["sections"]]
+    o.append(f"</tbody></table><p class='note'>{RULE_NOTE}</p>")
+    for sec in d["sections"]:
+        if sec["key"] in GOOD_SECTIONS:
+            continue
+        o.append(f"<h3>{esc(sec['title'])}</h3>")
+        if sec["rows"]:
+            o.append("<table><thead><tr>" + "".join(f"<th>{h}</th>" for h in HEAD) + "</tr></thead><tbody>")
+            o += ["<tr>" + "".join(f"<td>{esc(c)}</td>" for c in table_row(m)) + "</tr>" for m in sec["rows"]]
+            o.append("</tbody></table>")
+        else:
+            o.append("<p class='note'>ありません。</p>")
+        o.append("<p class='note'>" + "　".join(f"{esc(n)}: {esc(t)}" if n else esc(t) for n, t in sec["help"]) + "</p>")
     if d["series"]:
         o.append("<h2>形勢グラフ</h2>" + _chart_svg(d["series"]) + _legend_html())
     if d["items"]:
         o.append(f"<h2>局面ごとのふりかえり</h2><p class='note'>{BOARD_NOTE}</p>")
-    for m in d["items"]:
-        o.append(f'<div class="card">{board_svg(kifu, m["ply"] - 1, scale=1.4, background=None)}<div class="txt">'
-                 f'<h3>{m["ply"]}手目 {esc(m["side"] + m["move_jp"])}<span class="kind">{m["kind"]}</span></h3>')
-        o += [f"<p><b>{k}</b>: {esc(v)}</p>" for k, v in _facts(m)]
-        o.append(f'<div class="memo">{MEMO}<i></i><i></i></div></div></div>')
+    for sec in d["sections"]:
+        if sec["cards"]:
+            o.append(f"<h3>{esc(sec['title'])}</h3>")
+        for m in sec["cards"]:
+            o.append(f'<div class="card">{board_svg(kifu, m["ply"] - 1, scale=1.4, background=None)}<div class="txt">'
+                     f'<h3>{m["ply"]}手目 {esc(m["side"] + m["move_jp"])}<span class="kind">{esc(m["kind"])}</span></h3>')
+            o += [f"<p><b>{k}</b>: {esc(v)}</p>" for k, v in _facts(m)]
+            o.append(f'<div class="memo">{MEMO}<i></i><i></i></div></div></div>')
     if d["items"]:
-        o.append(f"<h2 class='newpage'>回答（エンジンの最善手）</h2><p class='note'>{ANSWER_NOTE}</p>")
-    for m in d["items"]:
-        board, mv = answer_board(kifu, m)
-        o.append(f'<div class="card">{board.to_svg(lastmove=mv, scale=1.4)}<div class="txt">'
-                 f'<h3>{m["ply"]}手目の回答<span class="kind">{m["kind"]}</span></h3>')
-        o += [f"<p><b>{k}</b>: {esc(v)}</p>" for k, v in _answer_facts(m)]
-        o.append("</div></div>")
-    if d.get("good"):  # 実戦の手が最善手だったかが分かるので、回答より後ろに置く
-        o.append("<h2>好手</h2><table><thead><tr>" + "".join(f"<th>{h}</th>" for h in GOOD_HEAD) + "</tr></thead><tbody>")
-        o += ["<tr>" + "".join(f"<td>{esc(c)}</td>" for c in good_row(m)) + "</tr>" for m in d["good"]]
-        o.append(f"</tbody></table><p class='note'>{GOOD_NOTE}</p>")
+        o.append(f"<h2 class='newpage'>回答（エンジンの最善手と、その後の読み筋）</h2><p class='note'>{ANSWER_NOTE}</p>")
+    for sec in d["sections"]:
+        if sec["cards"]:
+            o.append(f"<h3>{esc(sec['title'])}</h3>")
+        for m in sec["cards"]:
+            board, mv = answer_board(kifu, m)
+            o.append(f'<div class="card">{to_svg(board, mv, 1.4)}<div class="txt">'
+                     f'<h3>{m["ply"]}手目の回答<span class="kind">{esc(m["kind"])}</span></h3>')
+            o += [f"<p><b>{k}</b>: {esc(v)}</p>" for k, v in _answer_facts(m)]
+            o.append("</div></div>")
+    goods = [sec for sec in d["sections"] if sec["key"] in GOOD_SECTIONS]
+    if any(sec["rows"] for sec in goods):  # 実戦の手が最善手だったかが分かるので、回答より後ろに置く
+        o.append("<h2>好手</h2>")
+        for sec in goods:
+            o.append(f"<h3>{esc(sec['title'])}</h3>")
+            if not sec["rows"]:
+                o.append("<p class='note'>ありません。</p>")
+                continue
+            o.append("<table><thead><tr>" + "".join(f"<th>{h}</th>" for h in GOOD_HEAD) + "</tr></thead><tbody>")
+            o += ["<tr>" + "".join(f"<td>{esc(c)}</td>" for c in good_row(m)) + "</tr>" for m in sec["rows"]]
+            o.append("</tbody></table>")
+        o.append(f"<p class='note'>{GOOD_NOTE}</p>")
     if d["coach"]:
         o.append(f"<h2>AIコーチの所感</h2><p class='note'>{COACH_NOTE}</p>")
         for kind, text in d["coach"]:
@@ -307,6 +334,34 @@ color:inherit;cursor:pointer;">{esc(label)}</a>
   window.__furikaeriPrintUrl = URL.createObjectURL(new Blob([bytes], {{type: "text/html;charset=utf-8"}}));
   a.href = window.__furikaeriPrintUrl;
   a.target = "_blank";
+}})();
+</script>"""
+
+
+def timed_download_link(data: bytes, stem: str, ext: str, label: str, mime: str = "text/plain", uid: str = "kifu") -> str:
+    """押した時刻（秒まで）をファイル名に付けてダウンロードするリンク（st.html に JavaScript を許可して渡す）。
+
+    例: kifu_20261014-153012.kif。時刻は押したときのブラウザの時計。Streamlit のダウンロードボタンは
+    ファイル名が画面を描いた時点で決まるので、ブラウザ側で名前を付ける（発案者の指示 2026-10-14）。
+    """
+    b64 = base64.b64encode(data).decode("ascii")
+    uid = re.sub(r"[^a-z0-9_]", "", uid.lower()) or "dl"
+    stem = re.sub(r'[\\/:*?"<>|\s]+', "_", stem).strip("_") or "kifu"
+    return f"""<a id="furikaeri-dl-{uid}" style="display:block;text-align:center;
+padding:0.45rem 0.75rem;border:1px solid rgba(128,128,128,0.45);border-radius:0.5rem;text-decoration:none;
+color:inherit;cursor:pointer;">{esc(label)}</a>
+<script>
+(function () {{
+  var a = document.getElementById("furikaeri-dl-{uid}");
+  if (!a) return;
+  var bytes = Uint8Array.from(atob("{b64}"), function (c) {{ return c.charCodeAt(0); }});
+  var url = URL.createObjectURL(new Blob([bytes], {{type: "{mime}"}}));
+  a.href = url;
+  a.addEventListener("click", function () {{
+    var d = new Date(), p = function (n) {{ return String(n).padStart(2, "0"); }};
+    a.download = {json.dumps(stem)} + "_" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-"
+               + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + {json.dumps(ext)};
+  }});
 }})();
 </script>"""
 
@@ -374,6 +429,8 @@ class BoardDiagram(Flowable):
             cv.translate((8 - f) * c + c / 2, top - r * c - c / 2)
             if p >= 16:  # 後手の駒は逆さに描く
                 cv.rotate(180)
+            if p % 16 >= 9:  # 成り駒は赤（白黒で印刷すると灰色になる）
+                cv.setFillColor(colors.HexColor(PROMOTED_FILL))
             cv.drawCentredString(0, -fs * 0.36, cshogi.PIECE_JAPANESE_SYMBOLS[p % 16])
             cv.restoreState()
         cv.setFont(FONT, c * 0.5)
@@ -461,55 +518,70 @@ def to_pdf(d: dict, kifu: Kifu) -> bytes:
     rule = lambda: Table([[""]], colWidths=[W], rowHeights=[1], style=[("LINEABOVE", (0, 0), (-1, 0), 1.2, colors.black)])
     section = lambda text: [P(text, h2), rule(), Spacer(1, 5)]
 
-    s: list = [P("ふりかえりノート", h1), P(meta_line(d)), *section("感覚とエンジンのずれ")]
-    count = ParagraphStyle("count", parent=body, leading=21)
-    s.append(Table([[[Paragraph(f'<font name="{FONT_B}" size="16">{n}</font>　{lab}', count), P(KIND_HELP[lab], small)]
-                     for lab, n in d["counts"]]], colWidths=[W / 3] * 3,
-                   style=grid + [("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
-    s.append(Spacer(1, 6))
-    if d["items"]:
-        widths = [x * W / 180 for x in (20, 10, 28, 26, 19, 34, 43)]
-        data = [[P(h, cell) for h in HEAD]] + [[P(c, cell) for c in table_row(m)] for m in d["items"]]
-        s.append(Table(data, colWidths=widths, repeatRows=1,
-                       style=grid + [("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.9, 0.9, 0.9))]))
-    else:
-        s.append(P("印を付けた手も、しきい値を超える自分の悪手候補もありませんでした。"))
+    s: list = [P("ふりかえりノート", h1), P(meta_line(d)), *section("ラベルごとの数")]
+    head_bg = [("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.9, 0.9, 0.9))]
+    s.append(Table([[P("ラベル", cell), P("数", cell)]] + [[P(sec["title"], cell), P(count_text(sec), cell)]
+                                                         for sec in d["sections"]],
+                   colWidths=[W * 0.45, W * 0.55], style=grid + head_bg))
     s += [Spacer(1, 4), P(RULE_NOTE, small)]
+    h3s = ParagraphStyle("h3s", parent=h3, spaceBefore=8)
+    for sec in d["sections"]:
+        if sec["key"] in GOOD_SECTIONS:
+            continue
+        tip = P("　".join(f"{n}: {t}" if n else t for n, t in sec["help"]), small)
+        if not sec["rows"]:
+            s.append(KeepTogether([P(sec["title"], h3s), P("ありません。", small), tip]))
+            continue
+        widths = [x * W / 180 for x in (20, 10, 28, 26, 19, 34, 43)]
+        data = [[P(h, cell) for h in HEAD]] + [[P(c, cell) for c in table_row(m)] for m in sec["rows"]]
+        s += [KeepTogether([P(sec["title"], h3s), Table(data, colWidths=widths, repeatRows=1, style=grid + head_bg)]),
+              Spacer(1, 2), tip]
     if d["series"]:
         s.append(KeepTogether([*section("形勢グラフ"), WinrateChart(d["series"], W), _Legend(W)]))
     card = [("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
             ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 8),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 8), ("LINEABOVE", (0, 0), (-1, 0), 0.5, colors.Color(0.5, 0.5, 0.5))]
     lead = [*section("局面ごとのふりかえり"), P(BOARD_NOTE, small), Spacer(1, 4)]  # 見出しだけがページ末に残らないよう、最初の図と一緒に置く
-    for m in d["items"]:
-        board, last = board_after(kifu, m["ply"] - 1)
-        diagram = BoardDiagram(board, last)
-        text = [Paragraph(f'{esc(_safe(str(m["ply"]) + "手目 " + m["side"] + m["move_jp"]))}'
-                          f'　<font name="{FONT}" size="9">［{m["kind"]}］</font>', h3)]
-        text += [Paragraph(f"<b>{k}</b>: {esc(_safe(v))}", body) for k, v in _facts(m)]
-        tw = W - diagram.width - 6 * mm
-        text += [Spacer(1, 6), P(MEMO, small),
-                 Table([[""], [""]], colWidths=[tw], rowHeights=[8 * mm] * 2,
-                       style=[("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.Color(0.5, 0.5, 0.5))])]
-        s.append(KeepTogether(lead + [Table([[diagram, text]], colWidths=[diagram.width + 6 * mm, tw], style=card)]))
-        lead = []
+    for sec in d["sections"]:
+        if sec["cards"]:
+            lead.append(P(sec["title"], h3s))
+        for m in sec["cards"]:
+            board, last = board_after(kifu, m["ply"] - 1)
+            diagram = BoardDiagram(board, last)
+            text = [Paragraph(f'{esc(_safe(str(m["ply"]) + "手目 " + m["side"] + m["move_jp"]))}'
+                              f'　<font name="{FONT}" size="9">［{esc(m["kind"])}］</font>', h3)]
+            text += [Paragraph(f"<b>{k}</b>: {esc(_safe(v))}", body) for k, v in _facts(m)]
+            tw = W - diagram.width - 6 * mm
+            text += [Spacer(1, 6), P(MEMO, small),
+                     Table([[""], [""]], colWidths=[tw], rowHeights=[8 * mm] * 2,
+                           style=[("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.Color(0.5, 0.5, 0.5))])]
+            s.append(KeepTogether(lead + [Table([[diagram, text]], colWidths=[diagram.width + 6 * mm, tw], style=card)]))
+            lead = []
     # 回答は後ろのページに分ける（問題の図を見ているあいだ、答えが目に入らないように）
     if d["items"]:
         s.append(PageBreak())
-    lead = [*section("回答（エンジンの最善手）"), P(ANSWER_NOTE, small), Spacer(1, 4)]
-    for m in d["items"]:
-        diagram = BoardDiagram(*answer_board(kifu, m))
-        text = [Paragraph(f'{m["ply"]}手目の回答　<font name="{FONT}" size="9">［{m["kind"]}］</font>', h3)]
-        text += [Paragraph(f"<b>{k}</b>: {esc(_safe(v))}", body) for k, v in _answer_facts(m)]
-        s.append(KeepTogether(lead + [Table([[diagram, text]], style=card,
-                                            colWidths=[diagram.width + 6 * mm, W - diagram.width - 6 * mm])]))
-        lead = []
-    if d.get("good"):  # 実戦の手が最善手だったかが分かるので、回答より後ろに置く
+    lead = [*section("回答（エンジンの最善手と、その後の読み筋）"), P(ANSWER_NOTE, small), Spacer(1, 4)]
+    for sec in d["sections"]:
+        if sec["cards"]:
+            lead.append(P(sec["title"], h3s))
+        for m in sec["cards"]:
+            diagram = BoardDiagram(*answer_board(kifu, m))
+            text = [Paragraph(f'{m["ply"]}手目の回答　<font name="{FONT}" size="9">［{esc(m["kind"])}］</font>', h3)]
+            text += [Paragraph(f"<b>{k}</b>: {esc(_safe(v))}", body) for k, v in _answer_facts(m)]
+            s.append(KeepTogether(lead + [Table([[diagram, text]], style=card,
+                                                colWidths=[diagram.width + 6 * mm, W - diagram.width - 6 * mm])]))
+            lead = []
+    goods = [sec for sec in d["sections"] if sec["key"] in GOOD_SECTIONS]
+    if any(sec["rows"] for sec in goods):  # 実戦の手が最善手だったかが分かるので、回答より後ろに置く
+        s += section("好手")
         widths = [x * W / 180 for x in (28, 10, 30, 26, 22, 64)]
-        data = [[P(h, cell) for h in GOOD_HEAD]] + [[P(c, cell) for c in good_row(m)] for m in d["good"]]
-        s += [*section("好手"), Table(data, colWidths=widths, repeatRows=1,
-                                    style=grid + [("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.9, 0.9, 0.9))]),
-              Spacer(1, 4), P(GOOD_NOTE, small)]
+        for sec in goods:
+            if not sec["rows"]:
+                s.append(KeepTogether([P(sec["title"], h3s), P("ありません。", small)]))
+                continue
+            data = [[P(h, cell) for h in GOOD_HEAD]] + [[P(c, cell) for c in good_row(m)] for m in sec["rows"]]
+            s.append(KeepTogether([P(sec["title"], h3s), Table(data, colWidths=widths, repeatRows=1, style=grid + head_bg)]))
+        s += [Spacer(1, 4), P(GOOD_NOTE, small)]
     if d["coach"]:
         paras = [Paragraph("・" + inline(_safe(text)) if kind == "li" else inline(_safe(text)),
                            {"h": h3, "li": bullet, "p": body}[kind]) for kind, text in d["coach"]]
@@ -526,6 +598,86 @@ def to_pdf(d: dict, kifu: Kifu) -> bytes:
     def footer(cv, doc_):
         cv.setFont(FONT, 8)
         cv.drawCentredString(A4[0] / 2, 9 * mm, f"ふりかえり将棋　{doc_.page}")
+
+    doc.build(s, onFirstPage=footer, onLaterPages=footer)
+    return buf.getvalue()
+
+
+# ---------------- 傾向まとめ（複数の対局。shogi_analyzer.trend.collect の内容） ----------------
+
+TREND_TITLE = "大会に向けた傾向まとめ"
+TREND_FACT_NOTE = "保存した対局を、決まった規則で数えた結果です（AIの判断ではありません）。勝率はエンジンによる参考値です。"
+TREND_AI_NOTE = ("ここはAI（Gemini）が書いた所感です。上の記録にある数だけを使うよう指示し、記録に無い数字を含む行は"
+                 "取り除いています。")
+TREND_EX_NOTE = ("局面例は、決まった規則で選んでいます（種類ごとに、勝率の下落などがいちばん大きいもの）。"
+                 "図はその手を指す直前の局面です。赤い字は成り駒です。")
+
+
+def trend_html(d: dict) -> str:
+    """傾向まとめの印刷用ページ。AIの文章は文字として埋め込み、HTMLとして解釈させない。"""
+    o = ['<!doctype html><html lang="ja"><head><meta charset="utf-8">',
+         '<meta name="viewport" content="width=device-width, initial-scale=1">',
+         f"<title>{TREND_TITLE}</title><style>{CSS}</style></head><body>",
+         '<div class="bar"><button onclick="window.print()">印刷する</button>'
+         "<span>印刷画面で用紙サイズ A4 を選んでください（3ページ以内）。</span></div>",
+         f"<h1>{TREND_TITLE}</h1><p>{esc(d['created'])}　保存した対局 {d['games']}局</p>",
+         "<h2>記録から言えること</h2><ul>", *(f"<li>{esc(f)}</li>" for f in d["facts"]), "</ul>",
+         f"<p class='note'>{TREND_FACT_NOTE}</p>", "<h2>AIの所感</h2>"]
+    if d["ai"]:
+        o += ["<ul>", *(f"<li>{esc(b)}</li>" for b in d["ai"]), "</ul>", f"<p class='note'>{TREND_AI_NOTE}</p>"]
+    else:
+        o.append(f"<p class='note'>AIの所感はありません。{esc(d.get('ai_error', ''))}</p>")
+    for i, e in enumerate(d["examples"]):
+        if i % 2 == 0:
+            o.append(f"<h2 class='newpage'>局面例</h2><p class='note'>{TREND_EX_NOTE}</p>" if i == 0 else
+                     "<div class='newpage'></div>")
+        board = cshogi.Board(e["sfen"])
+        o.append(f'<div class="card">{to_svg(board, None, 1.4)}<div class="txt"><h3>{esc(trend_mod.example_title(e))}</h3>')
+        o += [f"<p><b>{k}</b>: {esc(v)}</p>" for k, v in trend_mod.example_text(e)]
+        o.append(f'<div class="memo">{MEMO}<i></i><i></i></div></div></div>')
+    return "".join(o) + "</body></html>"
+
+
+def trend_pdf(d: dict) -> bytes:
+    """傾向まとめのPDF（A4縦、3ページ以内）。1ページ目に記録とAIの所感、2・3ページ目に局面例を2つずつ。"""
+    _fonts()
+    base = dict(fontName=FONT, wordWrap="CJK", textColor=colors.black)
+    body = ParagraphStyle("body", fontSize=10, leading=15, **base)
+    small = ParagraphStyle("small", fontSize=8, leading=11.5, **base)
+    h1 = ParagraphStyle("h1", fontSize=17, leading=23, **{**base, "fontName": FONT_B})
+    h2 = ParagraphStyle("h2", fontSize=13, leading=18, spaceBefore=10, spaceAfter=4, **{**base, "fontName": FONT_B})
+    h3 = ParagraphStyle("h3", fontSize=10.5, leading=14, spaceAfter=2, **{**base, "fontName": FONT_B})
+    bullet = ParagraphStyle("bullet", parent=body, leftIndent=12, firstLineIndent=-10)
+    P = lambda text, style=body: Paragraph(esc(_safe(text)), style)
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm, topMargin=14 * mm,
+                            bottomMargin=16 * mm, title=TREND_TITLE, author="ふりかえり将棋")
+    W = doc.width
+    rule = lambda: Table([[""]], colWidths=[W], rowHeights=[1], style=[("LINEABOVE", (0, 0), (-1, 0), 1.2, colors.black)])
+    section = lambda text: [P(text, h2), rule(), Spacer(1, 4)]
+    s: list = [P(TREND_TITLE, h1), P(f"{d['created']}　保存した対局 {d['games']}局"), *section("記録から言えること")]
+    s += [P("・" + f, bullet) for f in d["facts"]] + [Spacer(1, 3), P(TREND_FACT_NOTE, small), *section("AIの所感")]
+    s += ([P("・" + b, bullet) for b in d["ai"]] + [Spacer(1, 3), P(TREND_AI_NOTE, small)] if d["ai"] else
+          [P("AIの所感はありません。" + d.get("ai_error", ""), small)])
+    card = [("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8), ("LINEABOVE", (0, 0), (-1, 0), 0.5, colors.Color(0.5, 0.5, 0.5))]
+    for i, e in enumerate(d["examples"]):
+        if i % 2 == 0:
+            s.append(PageBreak())
+            if i == 0:
+                s += [*section("局面例"), P(TREND_EX_NOTE, small), Spacer(1, 4)]
+        diagram = BoardDiagram(cshogi.Board(e["sfen"]))
+        tw = W - diagram.width - 6 * mm
+        text = [P(trend_mod.example_title(e), h3)] + [Paragraph(f"<b>{k}</b>: {esc(_safe(v))}", body)
+                                                      for k, v in trend_mod.example_text(e)]
+        text += [Spacer(1, 6), P(MEMO, small), Table([[""], [""]], colWidths=[tw], rowHeights=[8 * mm] * 2,
+                                                     style=[("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.Color(0.5, 0.5, 0.5))])]
+        s.append(Table([[diagram, text]], colWidths=[diagram.width + 6 * mm, tw], style=card))
+
+    def footer(cv, doc_):
+        cv.setFont(FONT, 8)
+        cv.drawCentredString(A4[0] / 2, 9 * mm, f"ふりかえり将棋　{TREND_TITLE}　{doc_.page}")
 
     doc.build(s, onFirstPage=footer, onLaterPages=footer)
     return buf.getvalue()

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<style>
+  /* AIコーチの講評。文章は Python 側でエスケープ済み（「N手目」の印だけが入る）。押した手数を返す。 */
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: "BIZ UDPGothic", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, "Noto Sans JP", sans-serif;
+         font-size: 15px; line-height: 1.7; }
+  .msg { margin: 0 0 14px; }
+  .user { border-left: 3px solid var(--line); padding: 2px 10px; opacity: 0.85; font-weight: bold; }
+  h3 { font-size: 16px; margin: 14px 0 4px; }
+  p, li { margin: 3px 0; padding: 2px 6px; border-radius: 6px; }
+  ul { margin: 2px 0; padding-left: 20px; }
+  .on { background: var(--hl); }
+  a.ply { color: var(--primary); text-decoration: underline; cursor: pointer; font-weight: bold; }
+  a.ply.cur { background: var(--primary); color: var(--bg); border-radius: 4px; padding: 0 3px; text-decoration: none; }
+</style>
+</head>
+<body>
+<div id="wrap"></div>
+<script>
+(function () {
+  function send(type, data) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), "*");
+  }
+  var count = 0;
+  function pick(ply) {
+    count += 1;
+    send("streamlit:setComponentValue", { value: { ply: ply, n: Date.now() + "-" + count }, dataType: "json" });
+  }
+  function height() {
+    send("streamlit:setFrameHeight", { height: document.getElementById("wrap").offsetHeight + 8 });
+  }
+  function render(args, theme) {
+    var root = document.documentElement.style, t = theme || {};
+    root.setProperty("--primary", t.primaryColor || "#ff4b4b");
+    root.setProperty("--bg", t.backgroundColor || "#ffffff");
+    root.setProperty("--line", "rgba(128,128,128,0.6)");
+    root.setProperty("--hl", "rgba(246, 185, 77, 0.28)");
+    if (t.textColor) document.body.style.color = t.textColor;
+    var cur = args.current, wrap = document.getElementById("wrap"), html = [];
+    (args.messages || []).forEach(function (m) {
+      html.push('<div class="msg ' + m.role + '">');
+      var inList = false;
+      m.blocks.forEach(function (b) {
+        var on = b.plies.indexOf(cur) >= 0 ? ' class="on"' : "";
+        if (b.kind === "li" && !inList) { html.push("<ul>"); inList = true; }
+        if (b.kind !== "li" && inList) { html.push("</ul>"); inList = false; }
+        html.push(b.kind === "h" ? "<h3" + on + ">" + b.html + "</h3>" :
+                  b.kind === "li" ? "<li" + on + ">" + b.html + "</li>" : "<p" + on + ">" + b.html + "</p>");
+      });
+      if (inList) html.push("</ul>");
+      html.push("</div>");
+    });
+    wrap.innerHTML = html.join("");  // 中身は Python 側でエスケープしたもの
+    wrap.querySelectorAll("a.ply").forEach(function (a) {
+      var n = parseInt(a.getAttribute("data-ply"), 10);
+      if (n === cur) a.className = "ply cur";
+      a.addEventListener("click", function () { pick(n); });
+    });
+    height();
+  }
+  var last = null;
+  window.addEventListener("message", function (ev) {
+    if (ev.data && ev.data.type === "streamlit:render") {
+      last = ev.data;
+      render(ev.data.args, ev.data.theme);
+    }
+  });
+  window.addEventListener("resize", function () { if (last) render(last.args, last.theme); });
+  send("streamlit:componentReady", { apiVersion: 1 });
+})();
+</script>
+</body>
+</html>
