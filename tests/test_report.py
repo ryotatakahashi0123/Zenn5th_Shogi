@@ -17,6 +17,7 @@ GOOD_NOTE = "<b>うまく受けた</b>"
 NOTE = "<script>alert(1)</script> 攻め合いで勝てると思った😀"
 
 
+ANSWER = "回答（エンジンの最善手と、その後の読み筋）"
 QA = [("15手目で<u>３四飛</u>なら\nどうだった？", "### 結論\n▲３四飛なら**互角**でした。\n- 先手の勝率 55%"), ("もう1つ質問", "回答2")]
 
 
@@ -30,20 +31,28 @@ def _data(coach="", qa=()):
              "best_pv": PV.get(m["ply"], ("", ""))[0], "pv": PV.get(m["ply"], ("", ""))[1]}
             for m in move_list(k)]
     marks = [regret.clean_mark(15, ["読み抜け", "手拍子"], NOTE, 40), regret.clean_mark(3, ["その他"], "", 40),
-             regret.clean_mark(5, [], GOOD_NOTE, 40, kind="good")]
+             regret.clean_mark(5, [], GOOD_NOTE, 40, kind="good"), regret.clean_mark(22, [], "", 40),
+             regret.clean_mark(16, [], "", 40, kind="other")]  # 22・16手目は相手（△）の手
     gap = regret.compare(rows, marks, "▲")
     return k, report.collect(k, rows, gap, title="sample", coach_text=coach, created="2026-10-12", qa=qa)
 
 
 def test_collect_keeps_numbers_and_order():
     _, d = _data()
-    assert d["counts"] == [("一致", 1), ("感覚だけ", 1), ("データだけ", 1)]
-    assert [(m["ply"], m["kind"]) for m in d["items"]] == [(3, "感覚だけ"), (15, "一致"), (21, "データだけ")]
-    assert report.table_row(d["items"][1])[3:5] == ["悪手", "31%"]  # 数値は解析の行のまま
+    secs = {s["key"]: s for s in d["sections"]}
+    assert [s["title"] for s in d["sections"]][0] == "自分の手・悪手だと思った" and len(d["sections"]) == 6
+    assert secs["my_bad"]["counts"] == [("一致", 1), ("感覚だけ", 1), ("データだけ", 1)]
+    assert report.count_text(secs["opp_other"]) == "1手"
+    # 局面図つきの欄は、6つのラベルの順に、印を付けた手と自分の悪手候補
+    assert [(m["ply"], m["kind"]) for m in d["items"]] == [
+        (3, "自分の手・悪手だと思った／感覚だけ"), (15, "自分の手・悪手だと思った／一致"), (21, "自分の手・悪手だと思った／データだけ"),
+        (5, "自分の手・好手だと思った／感覚だけ"), (22, "相手の手・悪手だと思った／一致"), (16, "相手の手・予想外で驚いた")]
+    assert report.table_row(secs["my_bad"]["rows"][1])[3:5] == ["悪手", "31%"]  # 数値は解析の行のまま
     assert len(d["series"]) == 40 and d["my_side"] == "先手"
-    # 好手: 印を付けた5手目（最善手とは違う）、自分の好手候補の9手目、相手の好手候補の16手目
-    assert [(m["ply"], m["kind"]) for m in d["good"]] == [(5, "感覚だけ"), (9, "データだけ"), (16, "相手の好手候補")]
-    assert report.good_row(d["good"][1])[3:5] == ["好手候補", "25%"]
+    # 好手: 印を付けた5手目（最善手とは違う）と自分の好手候補の9手目。相手の好手候補の16手目は、相手の手のラベル
+    assert [(m["ply"], m["kind"]) for m in secs["my_good"]["rows"]] == [(5, "感覚だけ"), (9, "データだけ")]
+    assert [(m["ply"], m["kind"]) for m in secs["opp_good"]["rows"]] == [(16, "データだけ")]
+    assert report.good_row(secs["my_good"]["rows"][1])[3:5] == ["好手候補", "25%"]
 
 
 def test_md_blocks_and_inline():
@@ -58,16 +67,18 @@ def test_html_escapes_user_text():
     page = report.to_html(d, k)
     assert "<script>alert(1)</script>" not in page and "&lt;script&gt;alert(1)&lt;/script&gt;" in page
     assert "<img" not in page and "<b>太字</b>" in page
-    assert page.count("<svg") >= 1 + 6 and page.count('class="card"') == 6  # グラフ + 局面図3つ + 回答の図3つ
+    assert page.count("<svg") >= 1 + 12 and page.count('class="card"') == 12  # グラフ + 局面図6つ + 回答の図6つ
     # エンジンの最善手は、回答の見出しより後ろにだけ出る
-    assert "最善手" not in page[page.index("<h1>"):page.index("回答（エンジンの最善手）")].replace(report.BOARD_NOTE, "")
-    assert page.count("エンジンの最善手</b>") == 3
+    assert "最善手" not in page[page.index("<h1>"):page.index(ANSWER)].replace(report.BOARD_NOTE, "")
+    assert page.count("エンジンの最善手</b>") == 6
+    # ラベルごとに見出しを付ける（局面ごとのふりかえりと回答の両方）
+    assert page.count("<h3>相手の手・予想外で驚いた</h3>") == 3  # 表、局面図、回答
     # 好手の表は回答より後ろ。本人のコメントは文字として埋め込む
-    assert page.index("<h2>好手</h2>") > page.index("回答（エンジンの最善手）")
+    assert page.index("<h2>好手</h2>") > page.index(ANSWER)
     assert "<b>うまく受けた</b>" not in page and "&lt;b&gt;うまく受けた&lt;/b&gt;" in page
     assert "window.print()" in page and "@page" in page and "AIコーチの所感" in page
     # 読み筋は回答にだけ出る（解析の行にあるUSIの手順を日本語にしたもの）。無い手には欄を出さない
-    front, back = page.split("回答（エンジンの最善手）", 1)
+    front, back = page.split(ANSWER, 1)
     assert "読み筋" not in front and back.count("最善手からの読み筋</b>") == 1
     assert "<b>最善手からの読み筋</b>: ▲３四飛 △７六飛" in back
     assert "<b>実戦の手からの読み筋</b>: ▲６六角 △８九飛成 ▲２二角成" in back
@@ -102,7 +113,7 @@ def test_pdf_has_embedded_font_and_pages():
     assert report._safe("歩😀") == "歩□"  # フォントに無い文字は□
     # 印も悪手候補も無い対局でも作れる
     k2, d2 = _data()
-    d2 = {**d2, "items": [], "series": [], "good": []}
+    d2 = {**d2, "items": [], "series": [], "sections": [{**s, "rows": [], "cards": []} for s in d2["sections"]]}
     assert report.to_pdf(d2, k2).startswith(b"%PDF")
 
 

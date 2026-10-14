@@ -8,12 +8,13 @@ from __future__ import annotations
 from collections import Counter
 
 from .kifu_analysis import Kifu
+from .regret import GROUP_KEYS, MARKED_KEYS, norm_kind
 
 PHASES = ["序盤", "中盤", "終盤"]  # その対局の手数を3等分した前・中・後（仮の区切り。発案者の確認待ち）
-KINDS = ["match", "feeling_only", "data_only", "surprise", "good_match", "good_feeling_only", "good_data_only"]
+KINDS = GROUP_KEYS  # 6つのラベルの区分（regret.SECTIONS）
 # 傾向まとめに載せる局面例の種類（発案者の指示 2026-10-14）。並びは載せる順
-EXAMPLE_KINDS = {"match": "悔しかった手（エンジンでも悪手候補）", "data_only": "気づかなかった悪手候補",
-                 "surprise": "驚いた相手の手", "alt": "迷った別の読みのほうが良かった手"}
+EXAMPLE_KINDS = {"match": "悪手だと思った自分の手（エンジンでも悪手候補）", "data_only": "気づかなかった自分の悪手候補",
+                 "surprise": "予想外で驚いた相手の手", "alt": "迷った別の読みのほうが良かった手"}
 MAX_EXAMPLES_PER_GAME = 2  # 1局から残す局面例の数（種類ごと）
 MAX_EXAMPLES = 4           # 傾向まとめに載せる局面例の数（3ページに収めるため）
 
@@ -25,9 +26,8 @@ def phase(ply: int, plies: int) -> str:
 def summarize(rows: list[dict], gap: dict, created: str = "", kifu: Kifu | None = None) -> dict:
     """1局ぶんの集計。rows: 全手解析の行。gap: regret.compare の結果。kifu があれば局面例（examples）も残す。"""
     plies = len(rows)
-    alts = [a for k in ("match", "feeling_only", "surprise", "good_match", "good_feeling_only")
-            for m in gap.get(k, []) for a in m.get("alts", []) if "verdict" in a]
-    noticed = {m["ply"] for m in gap["match"]}  # 悔しかった手の印が、エンジンの悪手候補と重なった手
+    alts = [a for k in MARKED_KEYS for m in gap.get(k, []) for a in m.get("alts", []) if "verdict" in a]
+    noticed = {m["ply"] for m in gap["match"]}  # 悪手だと思った自分の手の印が、エンジンの悪手候補と重なった手
     tags = Counter(t for k in ("match", "feeling_only") for m in gap[k] for t in m.get("tags", []))
     return {
         "created": created, "plies": plies, "my_side": gap["my_side"],
@@ -37,9 +37,9 @@ def summarize(rows: list[dict], gap: dict, created: str = "", kifu: Kifu | None 
         "bad": [{"ply": r["ply"], "label": r["label"], "phase": phase(r["ply"], plies), "noticed": r["ply"] in noticed}
                 for r in rows if r["label"] and r["side"] == gap["my_side"]],
         "good": sum(1 for r in rows if r.get("good") and r["side"] == gap["my_side"]),
-        # 自分の悔しかった手の印が、どの段階に付いたか
+        # 悪手だと思った自分の手の印が、どの段階に付いたか
         "regret_by_phase": dict(Counter(phase(m["ply"], plies) for k in ("match", "feeling_only") for m in gap[k])),
-        # 驚いた相手の手が、エンジンではどうだったか（最善手と同じ / 悪手候補 / どちらでもない）
+        # 予想外で驚いた相手の手が、エンジンではどうだったか（最善手と同じ / 悪手候補 / どちらでもない）
         "surprise": {"best": sum(1 for m in gap.get("surprise", []) if m["was_best"]),
                      "bad": sum(1 for m in gap.get("surprise", []) if m["label"]),
                      "total": len(gap.get("surprise", []))},
@@ -69,8 +69,7 @@ def examples(kifu: Kifu, rows: list[dict], gap: dict, created: str = "") -> list
                       key=lambda e: -e["score"])[:MAX_EXAMPLES_PER_GAME]
     out += sorted((ex("surprise", m, m["winrate_drop"] if m["label"] else 0.0) for m in gap.get("surprise", [])),
                   key=lambda e: -e["score"])[:MAX_EXAMPLES_PER_GAME]
-    better = [(m, a) for k in ("match", "feeling_only", "surprise", "good_match", "good_feeling_only")
-              for m in gap.get(k, []) for a in m.get("alts", []) if a.get("verdict") == "良い"]
+    better = [(m, a) for k in MARKED_KEYS for m in gap.get(k, []) for a in m.get("alts", []) if a.get("verdict") == "良い"]
     out += sorted((ex("alt", m, a["diff"], alt={"line_jp": a["line_jp"], "final_winrate": a["final_winrate"],
                                                "actual_winrate": a["actual_winrate"], "diff": a["diff"]})
                    for m, a in better), key=lambda e: -e["score"])[:MAX_EXAMPLES_PER_GAME]
@@ -86,9 +85,15 @@ def pick_examples(summaries: list[dict], n: int = MAX_EXAMPLES) -> list[dict]:
     return sorted((first + rest)[:n], key=lambda e: list(EXAMPLE_KINDS).index(e["kind"]))
 
 
-def summarize_marks(marks: list[dict], plies: int, my_side: str, created: str = "") -> dict:
-    """エンジンで解析しなかった対局（思考時間 0）の集計。数えられるのは本人が選んだ原因だけ。"""
-    tags = Counter(t for m in marks if m.get("kind", "regret") == "regret" for t in m.get("tags", []))
+def summarize_marks(marks: list[dict], plies: int, my_side: str, created: str = "", sides: dict | None = None) -> dict:
+    """エンジンで解析しなかった対局（思考時間 0）の集計。数えられるのは本人が選んだ原因だけ。
+
+    原因は、悪手だと思った自分の手のものを数える（解析ありの対局と同じ）。sides: 手数 → "▲"/"△"（無ければ手数の偶奇）。
+    """
+    def side(p):
+        return (sides or {}).get(p) or ("▲" if p % 2 else "△")
+    tags = Counter(t for m in marks if norm_kind(m.get("kind"), side(m["ply"]) == my_side) == "bad"
+                   and side(m["ply"]) == my_side for t in m.get("tags", []))
     return {"created": created, "plies": plies, "my_side": my_side, "analyzed": False,
             "counts": {k: 0 for k in KINDS}, "tags": dict(tags), "bad": [], "good": 0}
 
@@ -108,7 +113,7 @@ def aggregate(summaries: list[dict]) -> dict:
         "bad_moves": len(bad),
         "bad_by_phase": {p: sum(1 for b in bad if b["phase"] == p) for p in PHASES},
         "bad_by_label": {lab: sum(1 for b in bad if b["label"] == lab) for lab in ("悪手", "疑問手", "緩手")},
-        "bad_noticed": sum(1 for b in bad if b["noticed"]),  # 自分の悪手候補のうち、悔しかった手の印を付けていた数
+        "bad_noticed": sum(1 for b in bad if b["noticed"]),  # 自分の悪手候補のうち、悪手だと思った印を付けていた数
         "good_moves": sum(s.get("good", 0) for s in summaries),
         "regret_by_phase": {p: sum(s.get("regret_by_phase", {}).get(p, 0) for s in summaries) for p in PHASES},
         "surprise": {k: sum(s.get("surprise", {}).get(k, 0) for s in summaries) for k in ("total", "best", "bad")},

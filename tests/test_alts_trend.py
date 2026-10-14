@@ -102,7 +102,7 @@ def test_surprise_and_alts_in_summary_and_examples():
     rows = _rows(0.40)
     rows[15].update(label="悪手", winrate_drop=0.25, best_before_usi="zz")  # 16手目（△）は相手の悪手候補
     marks = [regret.clean_mark(15, ["読み抜け"], "コメント", 40, alts=[["2d3d"]]),
-             regret.clean_mark(16, [], "", 40, surprise=True)]
+             regret.clean_mark(16, [], "", 40, kind="other")]  # 相手（△）の手: 予想外で驚いた
     cache = {}
     alts.evaluate(FakeEngine((0.6,)), KIFU, marks, 300, cache)
     gap = regret.compare(rows, marks, "▲", alts.summaries(KIFU, marks, rows, cache))
@@ -134,7 +134,7 @@ def test_trend_facts_and_verify():
     agg, ex = _agg_examples()
     f = trend.facts(agg)
     assert f[0] == "保存した対局は2局（うちエンジンで解析した対局は2局）。" and any("参考程度" in x for x in f)
-    assert any(x.startswith("悔しかった手で多く選んだ原因: ") and "読み抜け（2回）" in x for x in f)
+    assert any(x.startswith("悪手だと思った自分の手で多く選んだ原因: ") and "読み抜け（2回）" in x for x in f)
     material = trend.ai_input(agg, ex)
     text = "前置き\n- 読み抜けが2回あります\n- 中盤に37回も悪手\n・**終盤**は丁寧に\n- " + "長" * 200 + "\n普通の文"
     assert trend.verify(text, material) == ["読み抜けが2回あります", "終盤は丁寧に"]  # 記録に無い数字・長すぎる行・箇条書きでない行を捨てる
