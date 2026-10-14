@@ -113,7 +113,10 @@ def logout():
 
 
 if not st.session_state.get("user"):
-    signup_page() if st.session_state.get("auth_page") == "signup" else login_page()
+    if st.session_state.get("auth_page") == "signup":  # 式のまま書くと、Streamlit が戻り値（None）を画面に出す
+        signup_page()
+    else:
+        login_page()
     st.stop()
 user = st.session_state["user"]
 
