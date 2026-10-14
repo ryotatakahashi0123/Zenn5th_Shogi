@@ -233,6 +233,17 @@ def move_list(kifu: Kifu) -> list[dict]:
     return out
 
 
+def _lines_usi(row: dict, ext: dict | None) -> dict:
+    """指す前の局面からの読み筋（USI の並び）。best は最善手から、actual は実戦の手から。"""
+    ext = ext or {}
+    best = ext.get(ext_key(row["ply"], "best")) or (row.get("best_pv") or "").split()
+    actual = ext.get(ext_key(row["ply"], "actual"))
+    if actual is None:
+        pv = (row.get("pv") or "").split()
+        actual = [row["move_usi"]] + pv if pv else []
+    return {"best": list(best), "actual": list(actual)}
+
+
 def lines_jp(kifu: Kifu, row: dict, ext: dict | None = None) -> dict:
     """全手解析の行にある読み筋（USI）を、日本語の手順にする。エンジンは呼ばない。
 
@@ -240,7 +251,6 @@ def lines_jp(kifu: Kifu, row: dict, ext: dict | None = None) -> dict:
     ext: 伸ばした読み筋（ext_key → 指す前の局面からの USI の手順。extend_rows が作る）。あればそれを使う。
     読み筋が行に無い（古い結果・終局）ときは空の並び。
     """
-    ext = ext or {}
     try:
         before, _ = board_after(kifu, row["ply"] - 1)
     except Exception:
@@ -251,13 +261,54 @@ def lines_jp(kifu: Kifu, row: dict, ext: dict | None = None) -> dict:
             return pv_jp(before, usi, LINE_PLIES)
         except Exception:  # 局面に合わない手が混じっていても、画面やPDFは止めない
             return []
-    best = ext.get(ext_key(row["ply"], "best")) or (row.get("best_pv") or "").split()
-    actual = ext.get(ext_key(row["ply"], "actual"))
-    if actual is None:
-        pv = (row.get("pv") or "").split()
-        actual = [row["move_usi"]] + pv if pv else []
-    actual = line(actual)
-    return {"best": line(best), "actual": actual if len(actual) > 1 else []}
+    u = _lines_usi(row, ext)
+    actual = line(u["actual"])
+    return {"best": line(u["best"]), "actual": actual if len(actual) > 1 else []}
+
+
+def line_positions(kifu: Kifu, row: dict, ext: dict | None = None) -> dict:
+    """読み筋を1手ずつ盤で見るための局面の並び（ポップアップ用。エンジンは呼ばない）。
+
+    best / actual のそれぞれが [{"sfen", "move_usi", "move_jp", "before"}, ...]。before はその手を指す前の SFEN（色を付けるのに使う）。
+    先頭は指す前の局面（move_jp は None。move_usi は直前の実戦の手）で、
+    i 番目は読み筋の i 手目を指した後の局面。指せない手が出たら、そこで打ち切る。lines_jp と同じく、
+    実戦の手からの読み筋は実戦の手だけ（続きが無い）なら空にする。
+    """
+    try:
+        start, last = board_after(kifu, row["ply"] - 1)
+    except Exception:
+        return {"best": [], "actual": []}
+    prev = board_after(kifu, row["ply"] - 2)[0].sfen() if row["ply"] > 1 else None
+    first = {"sfen": start.sfen(), "move_usi": cshogi.move_to_usi(last) if last else None, "move_jp": None, "before": prev}
+    out = {}
+    for which, usi in _lines_usi(row, ext).items():
+        board, steps = cshogi.Board(start.sfen()), [first]
+        for u in usi[:LINE_PLIES]:
+            try:
+                mv = board.move_from_usi(u)
+                if not mv or not board.is_legal(mv):
+                    break
+                jp = move_jp(board, u)
+            except Exception:
+                break
+            before = board.sfen()
+            board.push(mv)
+            steps.append({"sfen": board.sfen(), "move_usi": u, "move_jp": jp, "before": before})
+        out[which] = steps if len(steps) > (2 if which == "actual" else 1) else []
+    return out
+
+
+def position_svg(sfen: str, last_usi: str | None = None, before: str | None = None, scale: float = 2.0,
+                 background: str = "#f5deb3") -> str:
+    """SFEN の局面図（画面用）。last_usi の手（before の局面で指した手）のマスに色を付ける。盤の色を敷き、成り駒は赤。"""
+    board, last = cshogi.Board(sfen), None
+    if last_usi and before:
+        try:
+            last = cshogi.Board(before).move_from_usi(last_usi) or None
+        except Exception:
+            last = None
+    head, rest = to_svg(board, last, scale).split(">", 1)
+    return f'{head}><rect width="100%" height="100%" fill="{background}"/>{rest}'
 
 
 def ext_key(ply: int, which: str) -> str:

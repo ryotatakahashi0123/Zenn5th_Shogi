@@ -32,7 +32,8 @@ import streamlit.components.v1 as components
 
 from shogi_analyzer import alts, coach_view, entry, learn, regret, report
 from shogi_analyzer.kifu_analysis import GOOD_GAP, detect_format, load_kifu
-from shogi_analyzer.service import board_svg, ext_key, extend_rows, lines_jp, move_list, sfen_svg
+from shogi_analyzer.service import (board_svg, ext_key, extend_rows, line_positions, lines_jp, move_list, position_svg,
+                                    sfen_svg)
 from shogi_coach import auth, storage
 from shogi_coach import trend as trend_job
 from shogi_coach.engine_client import get_client
@@ -1166,6 +1167,53 @@ if st.session_state.get("job") and st.session_state["job"]["done"]:
 df = pd.DataFrame(rows)
 df["judge"] = [r["label"] or ("好手候補" if r.get("good") else "") for r in rows]  # グラフの点
 
+LINE_NAMES = {"best": "最善手からの読み筋", "actual": "実戦の手からの読み筋"}
+
+
+def open_lines(p, which="best"):
+    """読み筋のポップアップを開く（開く手と、最初に見せる読み筋）。"""
+    st.session_state.update(line_pop=p, line_which=which, line_step=0)
+
+
+def close_lines():
+    st.session_state["line_pop"] = None
+
+
+def line_step(d, n):
+    st.session_state["line_step"] = min(max(st.session_state.get("line_step", 0) + d, 0), n)
+
+
+@st.dialog("読み筋を盤で見る", width="large", on_dismiss=close_lines)
+def line_dialog():
+    """最善手・実戦の手からの読み筋を、1手ずつ盤で見る（エンジンは呼ばない。伸ばした読み筋があればそれを使う）。"""
+    ss = st.session_state
+    p = ss["line_pop"]
+    r = next((r for r in rows if r["ply"] == p), None)
+    pos = line_positions(kifu, r, ext_cache["rows"]) if r else {"best": [], "actual": []}
+    choices = [w for w in LINE_NAMES if pos[w]]
+    st.markdown(f"**{move_text(p)}** を指す直前の局面から（エンジンの判定: {regret.verdict(r) if r else '解析なし'}）")
+    if not choices:
+        st.info("この手には読み筋がありません。")
+        return
+    if ss.get("line_which") not in choices:
+        ss["line_which"] = choices[0]
+    which = st.radio("読み筋", choices, format_func=LINE_NAMES.get, horizontal=True, key="line_which",
+                     on_change=lambda: ss.update(line_step=0), label_visibility="collapsed")
+    steps = pos[which]
+    n = len(steps) - 1
+    i = min(ss.get("line_step", 0), n)
+    c1, c2, c3, c4 = st.columns([1, 1, 3, 1])
+    c1.button("最初", key="line_first", on_click=line_step, args=(-n, n), disabled=i == 0, use_container_width=True)
+    c2.button("◀ 前", key="line_prev", on_click=line_step, args=(-1, n), disabled=i == 0, use_container_width=True)
+    c4.button("次 ▶", key="line_next", on_click=line_step, args=(1, n), disabled=i == n, use_container_width=True)
+    c3.markdown(f"**{i}手目 / {n}手**　{steps[i]['move_jp'] or '（指す前の局面）'}")
+    st.image(position_svg(steps[i]["sfen"], steps[i]["move_usi"], steps[i]["before"]), width=460)
+    st.markdown("　".join((f"**[{k}] {s['move_jp']}**" if k == i else f"[{k}] {s['move_jp']}")
+                         for k, s in enumerate(steps) if k))
+    st.caption("色の付いたマスが、いま指した手です。読み筋は、エンジンが読んだ想定手順です（その先の展開の一例。最大12手）。"
+               "読み筋の続きをエンジンで読んでいる途中なら、閉じて開き直すと伸びていることがあります。")
+
+
 # PC では、上段の左に形勢グラフと局面図、右にAIコーチを並べ、表はその下に全幅で置く（発案者の指示 2026-10-14。空白を作らない）。
 # スマホの幅では Streamlit が横並びを縦に積むので、局面図 → AIコーチ → 表 の順になる
 if st.session_state.get("coach_pick") is not None:  # 講評の「N手目」が押された（手を選ぶ欄を描く前に移す）
@@ -1207,6 +1255,9 @@ with bottom:
                     out.append(f"- 実戦の手からの読み筋（{len(lines['actual'])}手）: " + " ".join(lines["actual"]))
                 out += [f"- 迷った読み{i + 1}: " + alts.describe(a) for i, a in enumerate(m.get("alts", []))]
                 st.markdown("\n".join(out) if out else "- 読み筋はありません。")
+                if lines["best"] or lines["actual"]:
+                    st.button("読み筋を盤で見る", key=f'lp_{sec["key"]}_{m["ply"]}', on_click=open_lines, args=(m["ply"],),
+                              help="最善手・実戦の手からの読み筋を、ポップアップで1手ずつ盤で確かめます。")
             if shown_items:
                 st.caption("表の行を押すと、その手の局面を上の局面図に出します。読み筋は、エンジンが読んだ想定手順です（その先の展開の一例。最大12手）。")
             if good_sec:
@@ -1283,7 +1334,12 @@ with bottom:
                         st.markdown(f"**{label}**（{len(line)}手）: " + " ".join(line))
                 if ext_missing():
                     st.caption("読み筋の続きを、エンジンで読んでいます…")
-                elif lines["best"] or lines["actual"]:
+                if lines["best"] or lines["actual"]:
+                    if st.button("読み筋を盤で見る", key="lp_main",
+                                 help="最善手・実戦の手からの読み筋を、ポップアップで1手ずつ盤で確かめます。"):
+                        open_lines(r["ply"])
+                        st.rerun()
+                if not ext_missing() and (lines["best"] or lines["actual"]):
                     st.caption("読み筋は、エンジンが読んだ想定手順です（その先の展開の一例）。短く途切れたときは、"
                                "終わりの局面を読み直して続きをつなげています（最大12手）。")
             line_view()
@@ -1324,6 +1380,9 @@ with bottom:
     st.caption("6つのラベルごとの表と局面図、形勢グラフをA4にまとめます。エンジンの最善手とその後の読み筋は、後ろのページに図つきの回答として載せます。「印刷用ページを開く」は新しいタブで開きます。"
                + ("AIコーチのふりかえりも入っています。" if review else "AIコーチにふりかえってもらうと、その文章も入ります。")
                + (f"AIコーチへの質問と回答（{len(qa)}件）は末尾に入っています。" if qa else "AIコーチへの質問と回答は、末尾に入ります。"))
+
+if st.session_state.get("line_pop"):
+    line_dialog()
 
 # ---- 3. AIコーチ ----
 with right:
