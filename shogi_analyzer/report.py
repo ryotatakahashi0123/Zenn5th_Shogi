@@ -56,7 +56,7 @@ MEMO = "気づいたこと・次に直すこと"
 # ---------------- 内容（PDFとHTMLで共通） ----------------
 
 def collect(kifu: Kifu, rows: list[dict], gap: dict, title: str = "", coach_text: str = "",
-            created: str = "", qa: list[tuple[str, str]] = ()) -> dict:
+            created: str = "", qa: list[tuple[str, str]] = (), ext: dict | None = None) -> dict:
     """rows: 全手解析の行。gap: regret.compare の結果。coach_text: AIコーチの講評（Markdown。無ければ空）。
 
     qa: AIコーチへの（質問, 回答）の並び。ノートの末尾に載せる。
@@ -65,7 +65,7 @@ def collect(kifu: Kifu, rows: list[dict], gap: dict, title: str = "", coach_text
 
     def item(m, label):
         r = by_ply[m["ply"]]
-        lines = lines_jp(kifu, r) if "move_usi" in r else {"best": [], "actual": []}
+        lines = lines_jp(kifu, r, ext) if "move_usi" in r else {"best": [], "actual": []}  # ext: 伸ばした読み筋
         return {**m, "kind": label, "best_usi": r["best_before_usi"],
                 "best_line": " ".join(lines["best"]), "actual_line": " ".join(lines["actual"])}
     items = sorted([*(item(m, label) for key, label in KINDS for m in gap[key]),

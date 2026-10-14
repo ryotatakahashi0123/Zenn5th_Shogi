@@ -42,7 +42,7 @@
 | `shogi_coach/` | `agent.py`（指示文・ログ）、`trend.py`（傾向まとめを Gemini で書いて保存）、`tools.py`（エージェントの道具）、`session.py`、`engine_client.py`、`storage.py` |
 | `engine_service/` | shogi-engine（FastAPI）。本番では非公開で、web のサービスアカウントだけが呼べる |
 | `deploy/setup.sh`, `cloudbuild.yaml`, `web.Dockerfile` | Cloud Run へのデプロイ（shogi-web 公開 / shogi-engine 非公開） |
-| `tests/` | `test_coach_view.py`、`test_alts_trend.py`（読み・傾向まとめ・成り駒。Gemini は台本モデル）、`test_regret.py`、`test_board_view.py`、`test_report.py`、`test_kifu_input.py`、`test_entry.py`（エンジン不要）、`test_engine_api.py` と `test_agent_flow.py`（`./engine` が必要。Gemini は台本モデルで代用） |
+| `tests/` | `test_lines.py`（読み筋を伸ばす）、`test_coach_view.py`、`test_alts_trend.py`（読み・傾向まとめ・成り駒。Gemini は台本モデル）、`test_regret.py`、`test_board_view.py`、`test_report.py`、`test_kifu_input.py`、`test_entry.py`（エンジン不要）、`test_engine_api.py` と `test_agent_flow.py`（`./engine` が必要。Gemini は台本モデルで代用） |
 
 判定: 評価値 cp を先手勝率 `1/(1+exp(-cp/600))` に直し、指した側の勝率が 20%以上下がれば「悪手」、10%「疑問手」、5%「緩手」。
 最善手と同じ手には付けない。
@@ -136,6 +136,13 @@
   保存の取り消し（削除）機能は無い。対局者名を含む棋譜のまま保存している（匿名化していない）
 - 読み筋: 全手解析の行に `best_pv`（指す前の局面の、最善手からの読み筋）と `pv`（実戦の手の後の読み筋）がある。
   `service.lines_jp` が日本語にする（エンジンを呼ばない）。出すのは解析結果の局面図の下と、ノートの「回答」だけ（前半には出さない）
+- **読み筋を伸ばす**（発案者の指示 2026-10-14: その先の展開まで出す）: 短い思考時間ではエンジンの読み筋が2手ほどで途切れる局面がある
+  （sample.kif の 400ms で40手中5手）。終わりの局面を読み直して続きをつなげ、`service.LINE_PLIES = 12` 手まで出す
+  （1つの読み筋につき最大 `EXTEND_CALLS = 3` 回、1回 `EXTEND_MS = 400` ミリ秒）。
+  画面・ノートは `service.extend_rows`（エンジンの窓口を使い、最後の1手の短い棋譜を全手解析にかけて続きを得る。新しいエンジンAPIは無い）。
+  対象は局面図に出している手と、ノートに載る手だけ。結果は `ext_cache` → `result.json` の `ext_lines`。
+  迷った読みの「その先」は `alts.evaluate` が伸ばし、`alts.describe` の文にも入る。AIコーチの `deep_dive` / `compare_move` は
+  `service.extend_pv`（エンジンを直接使う）で伸ばし、指示文で講評に最善・実戦の読み筋をそのまま書かせる
 
 ### 悔しかった手の印と「ずれ」
 
@@ -204,7 +211,7 @@
 
 ```bash
 cd ~/zenn5th_shogi && . .venv/bin/activate
-python -m pytest -q                                  # 47件通ること
+python -m pytest -q                                  # 49件通ること
 export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:-zenn5thshogi}"   # 無いとAIコーチが出ない（下の注意）
 streamlit run app.py --server.port=8080 --server.enableCORS=false --server.enableXsrfProtection=false
 ```

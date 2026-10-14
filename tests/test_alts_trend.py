@@ -79,9 +79,10 @@ def test_evaluate_and_summarize():
     marks = [regret.clean_mark(15, ["読み抜け"], "", 40, alts=[["2d3d", "8f7f"], ["2d2c+"]])]
     eng, cache = FakeEngine(wr=(0.62, 0.60)), {}
     alts.evaluate(eng, KIFU, marks, 300, cache)
-    assert len(eng.calls) == 2 and eng.calls[0].names == ["", ""]  # 対局者名は送らない
+    n = len(eng.calls)  # 読み2つの評価と、読みの終わりから先を伸ばすための読み直し
+    assert n >= 2 and all(c.names == ["", ""] for c in eng.calls)  # 対局者名は送らない
     alts.evaluate(eng, KIFU, marks, 300, cache)
-    assert len(eng.calls) == 2  # 評価済みは読み直さない
+    assert len(eng.calls) == n  # 評価済みは読み直さない
     s = alts.summaries(KIFU, marks, _rows(0.40), cache)[15]
     a = s[0]
     assert a["line_jp"] == ["▲３四飛", "△７六飛"] and a["final_winrate"] == 0.60 and a["actual_winrate"] == 0.40
