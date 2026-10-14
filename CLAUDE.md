@@ -37,12 +37,12 @@
 | パス | 内容 |
 |---|---|
 | `app.py` | Streamlit 画面。棋譜アップロード → 悔しかった手の印（局面図・手送り）→ 完了後に、ずれの表示、形勢グラフ、悪手候補、ふりかえりノート（PDF・印刷用ページ）、AIコーチ |
-| `shogi_analyzer/` | 外部サービスに依存しない解析。`alts.py`（迷った別の読み）、`trend.py`（傾向まとめの規則と、AIの文の検証）、`kifu_analysis.py`（読み込み・全手解析・勝率変換）、`service.py`（深掘り・比較、画面用の指し手一覧と局面図）、`usi_engine.py`、`regret.py`（印とエンジン判定の突き合わせ。純粋関数）、`report.py`（ふりかえりノートのPDFと印刷用HTML。エンジンもLLMも呼ばない） |
+| `shogi_analyzer/` | 外部サービスに依存しない解析。`alts.py`（迷った別の読み）、`coach_view.py`（講評の「N手目」を押せる形にする）、`trend.py`（傾向まとめの規則と、AIの文の検証）、`kifu_analysis.py`（読み込み・全手解析・勝率変換）、`service.py`（深掘り・比較、画面用の指し手一覧と局面図）、`usi_engine.py`、`regret.py`（印とエンジン判定の突き合わせ。純粋関数）、`report.py`（ふりかえりノートのPDFと印刷用HTML。エンジンもLLMも呼ばない） |
 | `assets/fonts/` | PDFに埋め込む BIZ UDゴシック（SIL OFL 1.1）。`web.Dockerfile` でコピーする |
 | `shogi_coach/` | `agent.py`（指示文・ログ）、`trend.py`（傾向まとめを Gemini で書いて保存）、`tools.py`（エージェントの道具）、`session.py`、`engine_client.py`、`storage.py` |
 | `engine_service/` | shogi-engine（FastAPI）。本番では非公開で、web のサービスアカウントだけが呼べる |
 | `deploy/setup.sh`, `cloudbuild.yaml`, `web.Dockerfile` | Cloud Run へのデプロイ（shogi-web 公開 / shogi-engine 非公開） |
-| `tests/` | `test_alts_trend.py`（読み・傾向まとめ・成り駒。Gemini は台本モデル）、`test_regret.py`、`test_board_view.py`、`test_report.py`、`test_kifu_input.py`、`test_entry.py`（エンジン不要）、`test_engine_api.py` と `test_agent_flow.py`（`./engine` が必要。Gemini は台本モデルで代用） |
+| `tests/` | `test_coach_view.py`、`test_alts_trend.py`（読み・傾向まとめ・成り駒。Gemini は台本モデル）、`test_regret.py`、`test_board_view.py`、`test_report.py`、`test_kifu_input.py`、`test_entry.py`（エンジン不要）、`test_engine_api.py` と `test_agent_flow.py`（`./engine` が必要。Gemini は台本モデルで代用） |
 
 判定: 評価値 cp を先手勝率 `1/(1+exp(-cp/600))` に直し、指した側の勝率が 20%以上下がれば「悪手」、10%「疑問手」、5%「緩手」。
 最善手と同じ手には付けない。
@@ -154,8 +154,17 @@
   印刷用ページ（blob を新しいタブで開く）は `report.collect` の同じ内容から作る。前半の局面図はその手を指す**直前**の局面。
   エンジンの最善手は前半（表・局面ごとの欄）に書かず、後ろのページの「回答」に、最善手を指した局面図と一緒に載せる（発案者の指示 2026-10-12）。
   本人のコメントとAIの文章は必ずエスケープして埋め込む
-- 解析結果の画面の並びは、ずれの表 → 形勢グラフ → 局面図 → 悪手候補。形勢グラフ、ずれの表の行、悪手候補の行を押すと、
-  その手を局面図に出す（`pick_point` / `pick_row`。選択が変わったときだけ動くので、前後ボタンと競合しない）
+- 解析結果の画面の並び（発案者の指示 2026-10-14。PC で空白を作らない）: 上段の左に形勢グラフと局面図、右にAIコーチ。
+  その下に全幅で、ずれの表 → 驚いた相手の手 → 迷った別の読み → 悪手候補 → 好手 → CSV・ノート。スマホの幅では Streamlit が
+  縦に積むので、局面図 → AIコーチ → 表 の順（発案者はスマホではこれで良いとした）。
+  形勢グラフ、表の行、AIコーチの講評の「N手目」を押すと、その手を局面図に出す（`pick_point` / `pick_row` / `coach_pick`。
+  選択が変わったときだけ動くので、前後ボタンと競合しない）
+- **講評と局面図の連動**: 講評は画面部品 `assets/coach_text`（盤の入力と同じ、ビルド不要の HTML 1枚）で描く。中身は
+  `shogi_analyzer/coach_view.py` がエスケープしてから「N手目」を押せる印にしたもの（対局に無い手数は押せない）。見出しの手数は、
+  次の見出しまでの段落にも引き継ぐ。局面図で選んでいる手に触れている段落と「N手目」に色が付く。
+  押された手は `coach_pick` に入れ、次の描画で手を選ぶ欄より前に `mark_ply` に移す（欄を描いた後には値を変えられないため）
+- **棋譜のダウンロード名**（発案者の指示 2026-10-14）: `元の名前_YYYYMMDD-HHMMSS.拡張子`。時刻は**押したとき**のブラウザの時計
+  （`report.timed_download_link`。Streamlit のダウンロードボタンは名前が描画時に決まるので、ブラウザ側で名前を付けるリンクにした）
 - サイドバーで自分の手番（先手/後手）を選ぶ
 - `regret.compare` が決まった規則で3つに分ける。**AIは区分を決めない**（結果を文章にするだけ）
   - 一致 … 印を付けた手が、エンジンでも悪手・疑問手・緩手
@@ -195,7 +204,7 @@
 
 ```bash
 cd ~/zenn5th_shogi && . .venv/bin/activate
-python -m pytest -q                                  # 44件通ること
+python -m pytest -q                                  # 47件通ること
 export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:-zenn5thshogi}"   # 無いとAIコーチが出ない（下の注意）
 streamlit run app.py --server.port=8080 --server.enableCORS=false --server.enableXsrfProtection=false
 ```

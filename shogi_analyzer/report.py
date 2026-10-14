@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import html
 import io
+import json
 import re
 from pathlib import Path
 
@@ -311,6 +312,34 @@ color:inherit;cursor:pointer;">{esc(label)}</a>
   window.__furikaeriPrintUrl = URL.createObjectURL(new Blob([bytes], {{type: "text/html;charset=utf-8"}}));
   a.href = window.__furikaeriPrintUrl;
   a.target = "_blank";
+}})();
+</script>"""
+
+
+def timed_download_link(data: bytes, stem: str, ext: str, label: str, mime: str = "text/plain", uid: str = "kifu") -> str:
+    """押した時刻（秒まで）をファイル名に付けてダウンロードするリンク（st.html に JavaScript を許可して渡す）。
+
+    例: kifu_20261014-153012.kif。時刻は押したときのブラウザの時計。Streamlit のダウンロードボタンは
+    ファイル名が画面を描いた時点で決まるので、ブラウザ側で名前を付ける（発案者の指示 2026-10-14）。
+    """
+    b64 = base64.b64encode(data).decode("ascii")
+    uid = re.sub(r"[^a-z0-9_]", "", uid.lower()) or "dl"
+    stem = re.sub(r'[\\/:*?"<>|\s]+', "_", stem).strip("_") or "kifu"
+    return f"""<a id="furikaeri-dl-{uid}" style="display:block;text-align:center;
+padding:0.45rem 0.75rem;border:1px solid rgba(128,128,128,0.45);border-radius:0.5rem;text-decoration:none;
+color:inherit;cursor:pointer;">{esc(label)}</a>
+<script>
+(function () {{
+  var a = document.getElementById("furikaeri-dl-{uid}");
+  if (!a) return;
+  var bytes = Uint8Array.from(atob("{b64}"), function (c) {{ return c.charCodeAt(0); }});
+  var url = URL.createObjectURL(new Blob([bytes], {{type: "{mime}"}}));
+  a.href = url;
+  a.addEventListener("click", function () {{
+    var d = new Date(), p = function (n) {{ return String(n).padStart(2, "0"); }};
+    a.download = {json.dumps(stem)} + "_" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-"
+               + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + {json.dumps(ext)};
+  }});
 }})();
 </script>"""
 

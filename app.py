@@ -29,7 +29,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from shogi_analyzer import alts, entry, learn, regret, report
+from shogi_analyzer import alts, coach_view, entry, learn, regret, report
 from shogi_analyzer.kifu_analysis import GOOD_GAP, detect_format, load_kifu
 from shogi_analyzer.service import board_svg, lines_jp, move_list, sfen_svg
 from shogi_coach import auth, storage
@@ -39,6 +39,8 @@ from shogi_coach.engine_client import get_client
 MAX_UPLOAD = 200_000  # bytes
 # 棋譜入力の将棋盤（cshogi の図を表示し、押されたマスを返す画面部品）
 board_input = components.declare_component("board_input", path=str(Path(__file__).parent / "assets" / "board_input"))
+# AIコーチの講評（「N手目」を押すと局面図をその手にする画面部品）
+coach_text = components.declare_component("coach_text", path=str(Path(__file__).parent / "assets" / "coach_text"))
 OK_EXT = (".kif", ".kifu", ".csa", ".txt")
 COACH_ERROR = "AIコーチの応答に失敗しました"
 REVIEW = "この対局をふりかえってください。"
@@ -175,6 +177,12 @@ def read_input(up, text, played, resign=False) -> tuple[str, str, bytes]:
         raise ValueError("棋譜が大きすぎます（200KBまで）")
     load_kifu(data, name)  # 棋譜として読めなければ、ここで ValueError
     return name, label, data
+
+
+def kifu_download(data: bytes, name: str, label: str, uid: str):
+    """棋譜のダウンロード。ファイル名に押した時刻（秒まで）を付ける（例: kifu_20261014-153012.kif）。"""
+    stem, ext = os.path.splitext(name)
+    st.html(report.timed_download_link(data, stem, ext or ".kif", label, uid=uid), unsafe_allow_javascript=True)
 
 
 def history(refresh=False) -> list[dict]:
@@ -523,8 +531,7 @@ def entry_board() -> bool:
     st.caption(f"入力した手順（{len(jp)}手）: " + (" ".join(jp) if jp else "まだありません")
                + f"　／　次は{'☗先手' if turn == 0 else '☖後手'}の番です。")
     if played:
-        st.download_button("盤面で入力した棋譜をダウンロード（CSA）", entry.to_csa(played).encode("utf-8"),
-                           file_name="kifu.csa", mime="text/plain", on_click="ignore")
+        kifu_download(entry.to_csa(played).encode("utf-8"), "kifu.csa", "盤面で入力した棋譜をダウンロード（CSA）", "entry")
     return resign
 
 
@@ -607,8 +614,7 @@ def kifu_zone():
                                 placeholder="将棋アプリで棋譜をコピーして、ここに貼り付けてください（KIF / CSA 形式）")
             if src:
                 st.markdown(f"いま読み込んでいる棋譜: **{src['label']}**")
-                st.download_button("いまの棋譜をダウンロード", src["data"], file_name=src["name"], mime="text/plain",
-                                   on_click="ignore")
+                kifu_download(src["data"], src["name"], "いまの棋譜をダウンロード", "current")
                 st.caption("ファイルと貼り付けの欄は、画面を移ると空に戻ります。何も入れずに下のボタンを押すと、いまの棋譜を使います。")
         with z2:
             resign = entry_board()
@@ -668,8 +674,8 @@ base_name = os.path.splitext(src["name"])[0]
 h1, h2, h3, h4 = st.columns([4, 1, 1, 1])
 h4.button("最初の画面に戻る", key="home_top", on_click=set_mode, args=("home",), use_container_width=True)
 h1.subheader(f"☗{kifu.names[0] or '先手'}　vs　☖{kifu.names[1] or '後手'}（{len(kifu.moves)}手）")
-h2.download_button("棋譜をダウンロード", src["data"], file_name=src["name"], mime="text/plain", on_click="ignore",
-                   use_container_width=True)
+with h2:
+    kifu_download(src["data"], src["name"], "棋譜をダウンロード", "study")
 h3.button("棋譜入力に戻る", on_click=set_mode, args=("input",), use_container_width=True)
 if src["save_error"]:
     st.caption(f"棋譜の保存に失敗しました（ふりかえりは続けられます）: {src['save_error']}")
@@ -1103,8 +1109,13 @@ if st.session_state.get("job") and st.session_state["job"]["done"]:
 df = pd.DataFrame(rows)
 df["judge"] = [r["label"] or ("好手候補" if r.get("good") else "") for r in rows]  # グラフの点
 
-left, right = st.columns([3, 2], gap="large")
-with left:
+# PC では、上段の左に形勢グラフと局面図、右にAIコーチを並べ、表はその下に全幅で置く（発案者の指示 2026-10-14。空白を作らない）。
+# スマホの幅では Streamlit が横並びを縦に積むので、局面図 → AIコーチ → 表 の順になる
+if st.session_state.get("coach_pick") is not None:  # 講評の「N手目」が押された（手を選ぶ欄を描く前に移す）
+    st.session_state["mark_ply"] = st.session_state.pop("coach_pick")
+top_l, right = st.columns([3, 2], gap="large")
+bottom = st.container()
+with bottom:
     st.markdown("#### 感覚とエンジンのずれ")
     if not any(m["kind"] == "regret" for m in marks.values()):
         st.info("悔しかった手の印を付けずに完了しました。下の「データだけ」は、エンジンが見つけたあなたの悪手候補です。")
@@ -1169,40 +1180,42 @@ with left:
                        f"（差が{alts.CLOSE:.0%}未満なら「同じくらい」。決まった規則で、AIの判断ではありません）。")
         alt_view()
 
-    st.markdown("#### 形勢グラフ（先手の勝率）")
-    base = alt.Chart(df).encode(x=alt.X("ply:Q", title="手数"))
-    line = base.mark_line().encode(
-        y=alt.Y("winrate_sente:Q", title="先手勝率", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(format="%")),
-        tooltip=["ply", "side", "move_jp", alt.Tooltip("winrate_sente:Q", format=".0%")],
-    )
-    points = base.transform_filter(alt.datum.judge != "").mark_point(filled=True, size=90).encode(
-        y="winrate_sente:Q",
-        color=alt.Color("judge:N", title="判定",
-                        scale=alt.Scale(domain=["悪手", "疑問手", "緩手", "好手候補"],
-                                        range=["#c0392b", "#e08e0b", "#3f8f6b", "#2e6fba"])),
-        tooltip=["ply", "side", "move_jp", "judge", "best_before_jp"],
-    )
-    mid = alt.Chart(pd.DataFrame({"y": [0.5]})).mark_rule(strokeDash=[4, 4], opacity=0.5).encode(y="y:Q")
-    # グラフを押すと、いちばん近い手を選ぶ（見えない点を全手に置いて、押した位置を拾う）
-    pick = alt.selection_point(name="pick", fields=["ply"], on="click", nearest=True, empty=False)
-    hit = base.mark_point(size=80, opacity=0).encode(y="winrate_sente:Q").add_params(pick)
-    now = alt.Chart(pd.DataFrame({"ply": [cur_ply()]})).mark_rule(color="#888", strokeWidth=1.5).encode(x="ply:Q")
-    st.altair_chart((mid + now + line + points + hit).properties(height=300), use_container_width=True,
-                    key="wr_chart", on_select=pick_point)
+    with top_l:
+        st.markdown("#### 形勢グラフ（先手の勝率）")
+        base = alt.Chart(df).encode(x=alt.X("ply:Q", title="手数"))
+        line = base.mark_line().encode(
+            y=alt.Y("winrate_sente:Q", title="先手勝率", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(format="%")),
+            tooltip=["ply", "side", "move_jp", alt.Tooltip("winrate_sente:Q", format=".0%")],
+        )
+        points = base.transform_filter(alt.datum.judge != "").mark_point(filled=True, size=90).encode(
+            y="winrate_sente:Q",
+            color=alt.Color("judge:N", title="判定",
+                            scale=alt.Scale(domain=["悪手", "疑問手", "緩手", "好手候補"],
+                                            range=["#c0392b", "#e08e0b", "#3f8f6b", "#2e6fba"])),
+            tooltip=["ply", "side", "move_jp", "judge", "best_before_jp"],
+        )
+        mid = alt.Chart(pd.DataFrame({"y": [0.5]})).mark_rule(strokeDash=[4, 4], opacity=0.5).encode(y="y:Q")
+        # グラフを押すと、いちばん近い手を選ぶ（見えない点を全手に置いて、押した位置を拾う）
+        pick = alt.selection_point(name="pick", fields=["ply"], on="click", nearest=True, empty=False)
+        hit = base.mark_point(size=80, opacity=0).encode(y="winrate_sente:Q").add_params(pick)
+        now = alt.Chart(pd.DataFrame({"ply": [cur_ply()]})).mark_rule(color="#888", strokeWidth=1.5).encode(x="ply:Q")
+        st.altair_chart((mid + now + line + points + hit).properties(height=300), use_container_width=True,
+                        key="wr_chart", on_select=pick_point)
 
-    st.markdown("#### 局面図")
-    st.caption("形勢グラフ、または上下の表（ずれ・悪手候補・好手）の行を押すと、その手の局面を表示します。グラフの縦線が表示中の手です。")
-    shown = board_view()
-    r = next((r for r in rows if r["ply"] == shown), None)
-    if r:
-        st.caption(f'エンジンの判定: {regret.verdict(r)}（勝率の下落 {r["winrate_drop"]:.0%}）　'
-                   f'エンジンの最善手: {r["side"]}{r["best_before_jp"]}')
-        lines = lines_jp(kifu, r)
-        for label, line in (("最善手からの読み筋", lines["best"]), ("実戦の手からの読み筋", lines["actual"])):
-            if line:
-                st.caption(f"{label}: " + " ".join(line))
-        if lines["best"] or lines["actual"]:
-            st.caption("読み筋は、エンジンが短い時間で読んだ想定手順です（その先の展開の一例）。")
+        st.markdown("#### 局面図")
+        st.caption("形勢グラフ、AIコーチの講評の「N手目」、または下の表（ずれ・驚いた手・悪手候補・好手）の行を押すと、"
+                   "その手の局面を表示します。グラフの縦線が表示中の手です。")
+        shown = board_view()
+        r = next((r for r in rows if r["ply"] == shown), None)
+        if r:
+            st.caption(f'エンジンの判定: {regret.verdict(r)}（勝率の下落 {r["winrate_drop"]:.0%}）　'
+                       f'エンジンの最善手: {r["side"]}{r["best_before_jp"]}')
+            lines = lines_jp(kifu, r)
+            for label, line in (("最善手からの読み筋", lines["best"]), ("実戦の手からの読み筋", lines["actual"])):
+                if line:
+                    st.caption(f"{label}: " + " ".join(line))
+            if lines["best"] or lines["actual"]:
+                st.caption("読み筋は、エンジンが短い時間で読んだ想定手順です（その先の展開の一例）。")
 
     st.markdown("#### 悪手候補")
     bad = df[df.label != ""][["ply", "side", "move_jp", "label", "winrate_drop", "best_before_jp"]]
@@ -1302,11 +1315,15 @@ with right:
             ask(REVIEW, "AIコーチが局面を選んで調べています…")
             st.rerun()
 
-    for role, text in st.session_state["chat"]:
-        if role == "user" and text == REVIEW:
-            continue
-        with st.chat_message(role):
-            st.markdown(text)
+    if st.session_state["chat"]:
+        # 講評の「N手目」を押すと、横の局面図をその手にする。局面図で選んでいる手に触れている段落には色が付く
+        ev = coach_text(messages=coach_view.messages(st.session_state["chat"], len(kifu.moves), REVIEW, COACH_ERROR),
+                        current=cur_ply(), key="coach_text", default=None)
+        if ev and ev.get("n") != st.session_state.get("coach_seen"):
+            st.session_state["coach_seen"] = ev["n"]
+            st.session_state["coach_pick"] = int(ev["ply"])
+            st.rerun()
+        st.caption("講評の「N手目」を押すと、局面図がその手に移ります。局面図で選んでいる手に触れている段落には色が付きます。")
 
     @st.fragment(run_every=1.0 if job or auto_pending else None)
     def waiting():
