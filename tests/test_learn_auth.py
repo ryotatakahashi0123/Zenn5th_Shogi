@@ -3,11 +3,15 @@
     python -m pytest tests/test_learn_auth.py
 """
 import json
+from datetime import date
 
 import pytest
 
 from shogi_analyzer import learn, regret
 from shogi_coach import auth, storage
+
+
+B = date(2000, 1, 1)  # 画面からの登録に要る生年月日
 
 
 def _row(ply, label="", good=False):
@@ -47,6 +51,13 @@ def test_aggregate():
     assert a["tags"] == [{"tag": "読み抜け", "count": 4}, {"tag": "手拍子", "count": 2}]
     assert a["bad_moves"] == 6 and a["bad_noticed"] == 2 and a["good_moves"] == 2
     assert a["bad_by_phase"] == {"序盤": 2, "中盤": 2, "終盤": 2} and a["bad_by_label"]["悪手"] == 2
+    # 割合は、自分（▲）が指した手（1,3 / 5 / 7,9）のうち悪手候補だった手。順番は序盤・中盤・終盤で固定
+    assert a["moves_by_phase"] == {"序盤": 4, "中盤": 2, "終盤": 4} and list(a["bad_rate_by_phase"]) == learn.PHASES
+    assert a["bad_rate_by_phase"] == {"序盤": 0.5, "中盤": 1.0, "終盤": 0.5} and a["bad_rate"] == 0.6
+    assert a["noticed_rate"] == 2 / 6
+    old = {k: v for k, v in s.items() if k != "moves_by_phase"}  # 分母を持たない古い集計は、手数の偶奇から数える
+    assert learn.aggregate([old])["moves_by_phase"] == {"序盤": 2, "中盤": 1, "終盤": 2}
+    assert learn.aggregate([{"counts": {}}])["bad_rate_by_phase"] == {"序盤": None, "中盤": None, "終盤": None}
     assert learn.aggregate([])["games"] == 0
     assert learn.aggregate([s, {**s, "pending": True}])["games"] == 1  # 印の入力がまだの対局は、記録に数えない
     # エンジンで解析しなかった対局は、悪手だと思った自分の手で選んだ原因だけを数える
@@ -86,20 +97,20 @@ def test_local_store_users_and_games(tmp_path, monkeypatch):
         with pytest.raises(ValueError):
             auth.add_user(name, pw)
     # 画面からの登録: すでにある名前は上書きしない。パスワードは8文字以上、確認と一致、上限あり
-    assert auth.register(" Hanako ", "longpassword", "longpassword") == "hanako" and auth.login("hanako", "longpassword")
+    assert auth.register(" Hanako ", "longpassword", "longpassword", birth=B) == "hanako" and auth.login("hanako", "longpassword")
     for args, word in (((("taro", "longpassword", "longpassword")), "すでに"), (("jiro", "short", "short"), "8文字"),
                        (("jiro", "longpassword", "longpassworx"), "一致"), (("ジロー", "longpassword", "longpassword"), "利用者名")):
         with pytest.raises(ValueError, match=word):
-            auth.register(*args)
+            auth.register(*args, birth=B)
     assert auth.login("taro", "pass1")  # 上書きされていない
     monkeypatch.setattr(auth, "MAX_USERS", 2)
     with pytest.raises(ValueError, match="上限"):
-        auth.register("jiro", "longpassword", "longpassword")
+        auth.register("jiro", "longpassword", "longpassword", birth=B)
     monkeypatch.setattr(auth, "MAX_USERS", 30)
     monkeypatch.setattr(auth, "SIGNUP_CODE", "aikotoba")
     with pytest.raises(ValueError, match="合言葉"):
-        auth.register("jiro", "longpassword", "longpassword", "x")
-    assert auth.register("jiro", "longpassword", "longpassword", "aikotoba") == "jiro"
+        auth.register("jiro", "longpassword", "longpassword", "x", birth=B)
+    assert auth.register("jiro", "longpassword", "longpassword", "aikotoba", birth=B) == "jiro"
     # 対局は利用者ごとに分かれる
     storage.save_kifu("taro", "20261013-ab12", "x.csa", b"V2.2\n")
     storage.save_json("taro", "20261013-ab12", "summary", {"plies": 9})
@@ -142,3 +153,37 @@ def test_six_labels_in_record_and_facts():
     assert "相手の悪手候補は1回。そのうち悪手だと気づけたのは1回（相手の悪手だと思ったが、エンジンでは勝率がほとんど下がっていなかった手は0回）。" in f
     assert "ほかにも指す手があったと思いながら指した自分の手: 1回。" in f
     assert "好手だと思った自分の手は1回。そのうちエンジンの最善手と同じだったのは1回。" in f
+
+
+def test_reset_password_with_birth(tmp_path, monkeypatch):
+    from datetime import date
+    monkeypatch.setattr(storage, "BUCKET", "")
+    monkeypatch.setattr(storage, "DATA_DIR", tmp_path)
+    auth._fails.clear()
+    with pytest.raises(ValueError, match="生年月日"):
+        auth.register("hanako", "longpassword", "longpassword")  # 生年月日は必須
+    with pytest.raises(ValueError, match="正しくありません"):
+        auth.register("hanako", "longpassword", "longpassword", birth=date(2999, 1, 1))
+    auth.register("hanako", "longpassword", "longpassword", birth=date(2000, 2, 29))
+    assert "2000" not in json.dumps(auth.load_users())  # 生年月日そのものは保存しない
+    with pytest.raises(ValueError, match="利用者名か生年月日"):
+        auth.reset_password("hanako", date(2000, 3, 1), "newpassword", "newpassword", now=0)
+    with pytest.raises(ValueError, match="利用者名か生年月日"):
+        auth.reset_password("nobody", date(2000, 2, 29), "newpassword", "newpassword", now=0)  # いない利用者も同じ文
+    with pytest.raises(ValueError, match="確認"):
+        auth.reset_password("hanako", date(2000, 2, 29), "newpassword", "other", now=0)
+    assert auth.reset_password(" Hanako ", date(2000, 2, 29), "newpassword", "newpassword", now=0) == "hanako"
+    assert auth.login("hanako", "newpassword") and not auth.login("hanako", "longpassword")
+    assert auth.reset_password("hanako", date(2000, 2, 29), "again12345", "again12345", now=0)  # 生年月日は残っている
+    auth.add_user("hanako", "admin")  # 管理者がパスワードを変えても、生年月日は残す
+    assert auth.reset_password("hanako", date(2000, 2, 29), "again12345", "again12345", now=0)
+    auth.add_user("taro", "pass1")  # 生年月日の無い利用者は、画面から初期化できない
+    with pytest.raises(ValueError, match="利用者名か生年月日"):
+        auth.reset_password("taro", date(2000, 2, 29), "newpassword", "newpassword", now=0)
+    auth._fails.clear()
+    for _ in range(auth.MAX_FAILS):  # 生年月日の総当たりは、続けて間違えると止める
+        with pytest.raises(ValueError, match="利用者名か生年月日"):
+            auth.reset_password("hanako", date(1999, 1, 1), "newpassword", "newpassword", now=10)
+    with pytest.raises(ValueError, match="しばらく"):
+        auth.reset_password("hanako", date(2000, 2, 29), "newpassword", "newpassword", now=11)
+    assert auth.reset_password("hanako", date(2000, 2, 29), "newpassword", "newpassword", now=11 + auth.LOCK_SECONDS)

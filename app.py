@@ -20,7 +20,7 @@ import re
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from pathlib import Path
 
@@ -65,6 +65,11 @@ st.caption("棋譜を読み込み、答えを見る前に、まず自分の感�
 JST = timezone(timedelta(hours=9))
 
 
+def pct(x) -> str:
+    """割合（0〜1）を「12%」の形にする。分母が無い（None）ときは「—」。"""
+    return "—" if x is None else f"{x * 100:.0f}%"
+
+
 def footer():
     """どの画面の最後にも出すフッター（使っている将棋エンジン・評価関数のクレジット）。"""
     st.divider()
@@ -80,6 +85,8 @@ def stop():
 # ---- ログインと利用者の登録（利用者名とパスワード。管理者は tools/add_user.py でも追加できる） ----
 def login_page():
     st.markdown("#### ログイン")
+    if st.session_state.pop("reset_done", False):
+        st.success("パスワードを初期化しました。新しいパスワードでログインしてください。")
     with st.form("login"):
         name = st.text_input("利用者名")
         password = st.text_input("パスワード", type="password")
@@ -96,7 +103,13 @@ def login_page():
                 st.session_state["user"] = name.strip().lower()
                 st.rerun()
             st.error("利用者名かパスワードが違います")
-    st.button("新しい利用者を登録する", on_click=lambda: st.session_state.update(auth_page="signup"))
+    c1, c2 = st.columns(2)
+    c1.button("新しい利用者を登録する", on_click=lambda: st.session_state.update(auth_page="signup"), use_container_width=True)
+    c2.button("パスワードを忘れた場合", on_click=lambda: st.session_state.update(auth_page="reset"), use_container_width=True)
+
+
+def birth_input(label="生年月日"):
+    return st.date_input(label, value=None, min_value=date(1900, 1, 1), max_value=date.today(), format="YYYY/MM/DD")
 
 
 def signup_page():
@@ -106,18 +119,44 @@ def signup_page():
         name = st.text_input("利用者名", help="半角の英小文字・数字・_ の2〜20文字")
         password = st.text_input("パスワード", type="password", help=f"{auth.MIN_SIGNUP_PASSWORD}文字以上")
         confirm = st.text_input("パスワード（確認）", type="password")
+        birth = birth_input("生年月日（パスワードを忘れたときの確認に使います）")
         code = st.text_input("登録の合言葉", type="password") if auth.SIGNUP_CODE else ""
         go = st.form_submit_button("登録する", type="primary")
-    st.caption("パスワードそのものは保存しません（照合用のハッシュだけを保存します）。パスワードを忘れたときに、画面から再設定する機能はありません。")
+    st.caption("パスワードと生年月日そのものは保存しません（照合用のハッシュだけを保存します）。"
+               "パスワードを忘れたときは、ログイン画面の「パスワードを忘れた場合」から、利用者名と生年月日で新しいパスワードに初期化できます。")
     if go:
         try:
-            st.session_state["user"] = auth.register(name, password, confirm, code)
+            st.session_state["user"] = auth.register(name, password, confirm, code, birth)
         except ValueError as e:
             st.error(str(e))
         except Exception as e:
             st.error(f"登録に失敗しました: {e}")
         else:
             st.rerun()  # 登録できたら、そのままログインした状態にする
+
+
+def reset_page():
+    st.markdown("#### パスワードの初期化")
+    st.button("◀ ログインに戻る", on_click=lambda: st.session_state.update(auth_page="login"))
+    with st.form("reset"):
+        name = st.text_input("利用者名")
+        birth = birth_input()
+        password = st.text_input("新しいパスワード", type="password", help=f"{auth.MIN_SIGNUP_PASSWORD}文字以上")
+        confirm = st.text_input("新しいパスワード（確認）", type="password")
+        go = st.form_submit_button("パスワードを初期化する", type="primary")
+    st.caption("利用者名と、登録したときの生年月日が一致すれば、パスワードを新しいものに変えます。"
+               "生年月日の登録が始まる前（2026-10-15 より前）に登録した利用者は、ここでは初期化できません。")
+    if go:
+        try:
+            auth.reset_password(name, birth, password, confirm)
+        except ValueError as e:
+            st.error(str(e))
+        except Exception as e:
+            st.error(f"初期化に失敗しました: {e}")
+        else:
+            st.session_state["auth_page"] = "login"
+            st.session_state["reset_done"] = True
+            st.rerun()
 
 
 def logout():
@@ -127,6 +166,8 @@ def logout():
 if not st.session_state.get("user"):
     if st.session_state.get("auth_page") == "signup":  # 式のまま書くと、Streamlit が戻り値（None）を画面に出す
         signup_page()
+    elif st.session_state.get("auth_page") == "reset":
+        reset_page()
     else:
         login_page()
     stop()
@@ -484,8 +525,11 @@ def home():
         return
     m = st.columns(4)
     m[0].metric("保存した対局", f'{agg["games"]}局')
-    m[1].metric("自分の悪手候補", agg["bad_moves"], help="エンジンの判定で、自分の悪手・疑問手・緩手だった手の合計")
-    m[2].metric("うち、自分で気づけた数", agg["bad_noticed"], help="悪手候補のうち、解析を見る前に「悪手だと思った」印を付けていた数")
+    m[1].metric("自分の悪手候補の割合", pct(agg["bad_rate"]),
+                help=f'自分が指した手（{agg["my_moves"]}手）のうち、エンジンの判定で悪手・疑問手・緩手だった手（{agg["bad_moves"]}手）の割合。'
+                     "100%なら全部の手、0%なら悪手候補が1つも無い")
+    m[2].metric("うち、自分で気づけた割合", pct(agg["noticed_rate"]),
+                help=f'悪手候補（{agg["bad_moves"]}手）のうち、解析を見る前に「悪手だと思った」印を付けていた手（{agg["bad_noticed"]}手）の割合')
     m[3].metric("自分の好手候補", agg["good_moves"])
     t1, t2 = st.columns(2)
     with t1:
@@ -496,9 +540,11 @@ def home():
         else:
             st.caption("まだありません。")
     with t2:
-        st.markdown("**悪手候補が出た段階**")
-        st.dataframe(pd.DataFrame([{"段階": p, "悪手候補": n} for p, n in agg["bad_by_phase"].items()]), hide_index=True,
-                     use_container_width=True)
+        st.markdown("**悪手候補が出た段階**（自分が指した手のうち、悪手候補だった割合）")
+        # 並べ替えられない表にして、序盤・中盤・終盤の順に固定する（発案者の指示 2026-10-15）
+        st.table(pd.DataFrame([{"段階": p, "悪手候補の割合": pct(agg["bad_rate_by_phase"][p]),
+                                "悪手候補 / 指した手": f'{agg["bad_by_phase"][p]} / {agg["moves_by_phase"][p]}手'}
+                               for p in learn.PHASES]).set_index("段階"))
     st.caption("保存に同意した対局だけを、決まった規則で数えています（AIの判断ではありません）。段階は、その対局の手数を3等分した"
                "序盤・中盤・終盤です。AIコーチは、この記録を見てふりかえりを書きます。"
                + ("保存から30日たった対局は、記録からも消えます。" if storage.BUCKET else ""))

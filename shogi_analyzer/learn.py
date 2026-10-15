@@ -10,7 +10,7 @@ from collections import Counter
 from .kifu_analysis import Kifu
 from .regret import GROUP_KEYS, MARKED_KEYS, norm_kind
 
-PHASES = ["序盤", "中盤", "終盤"]  # その対局の手数を3等分した前・中・後（仮の区切り。発案者の確認待ち）
+PHASES = ["序盤", "中盤", "終盤"]  # その対局の手数を3等分した前・中・後（仮の区切り。発案者の確認待ち）。表示もこの順に固定する
 KINDS = GROUP_KEYS  # 6つのラベルの区分（regret.SECTIONS）
 # 傾向まとめに載せる局面例の種類（発案者の指示 2026-10-14）。並びは載せる順
 EXAMPLE_KINDS = {"match": "悪手だと思った自分の手（エンジンでも悪手候補）", "data_only": "気づかなかった自分の悪手候補",
@@ -37,6 +37,8 @@ def summarize(rows: list[dict], gap: dict, created: str = "", kifu: Kifu | None 
         "bad": [{"ply": r["ply"], "label": r["label"], "phase": phase(r["ply"], plies), "noticed": r["ply"] in noticed}
                 for r in rows if r["label"] and r["side"] == gap["my_side"]],
         "good": sum(1 for r in rows if r.get("good") and r["side"] == gap["my_side"]),
+        # 自分が指した手の数（段階ごと）。悪手候補の割合の分母
+        "moves_by_phase": dict(Counter(phase(r["ply"], plies) for r in rows if r["side"] == gap["my_side"])),
         # 悪手だと思った自分の手の印が、どの段階に付いたか
         "regret_by_phase": dict(Counter(phase(m["ply"], plies) for k in ("match", "feeling_only") for m in gap[k])),
         # 予想外で驚いた相手の手が、エンジンではどうだったか（最善手と同じ / 悪手候補 / どちらでもない）
@@ -98,6 +100,21 @@ def summarize_marks(marks: list[dict], plies: int, my_side: str, created: str = 
             "counts": {k: 0 for k in KINDS}, "tags": dict(tags), "bad": [], "good": 0}
 
 
+def moves_by_phase(s: dict) -> dict:
+    """1局の、自分が指した手の数（段階ごと）。moves_by_phase の無い古い集計は、手数の偶奇（▲が奇数手）から数える。"""
+    if not s.get("analyzed", True):
+        return {p: 0 for p in PHASES}  # 解析していない対局は、悪手候補の割合に入れない
+    if "moves_by_phase" in s:
+        return {p: s["moves_by_phase"].get(p, 0) for p in PHASES}
+    plies, odd = s.get("plies") or 0, s.get("my_side") == "▲"
+    return dict(Counter(phase(n, plies) for n in range(1, plies + 1) if (n % 2 == 1) == odd))
+
+
+def rate(n: int, total: int) -> float | None:
+    """割合（0〜1）。分母が 0 なら None（割合を出さない）。"""
+    return n / total if total else None
+
+
 def aggregate(summaries: list[dict]) -> dict:
     """保存した対局の集計を足し合わせる。games が 0 なら記録なし。印の入力がまだの対局（pending）は数えない。"""
     summaries = [s for s in summaries if not s.get("pending")]
@@ -105,15 +122,23 @@ def aggregate(summaries: list[dict]) -> dict:
     tags = Counter()
     for s in summaries:
         tags.update(s.get("tags", {}))
+    moves = {p: sum(moves_by_phase(s).get(p, 0) for s in summaries) for p in PHASES}
+    bad_by_phase = {p: sum(1 for b in bad if b["phase"] == p) for p in PHASES}
     return {
         "games": len(summaries),
         "games_analyzed": sum(1 for s in summaries if s.get("analyzed", True)),  # エンジンで解析した対局（悪手候補などの数はこの分だけ）
         "counts": {k: sum(s.get("counts", {}).get(k, 0) for s in summaries) for k in KINDS},
         "tags": [{"tag": t, "count": n} for t, n in sorted(tags.items(), key=lambda x: (-x[1], x[0]))],
         "bad_moves": len(bad),
-        "bad_by_phase": {p: sum(1 for b in bad if b["phase"] == p) for p in PHASES},
+        "bad_by_phase": bad_by_phase,
+        # 自分が指した手のうち悪手候補だった割合（発案者の指示 2026-10-15: 回数より割合で見る。100% = 全部の手、0% = 悪手候補なし）
+        "my_moves": sum(moves.values()),
+        "moves_by_phase": moves,
+        "bad_rate": rate(len(bad), sum(moves.values())),
+        "bad_rate_by_phase": {p: rate(bad_by_phase[p], moves[p]) for p in PHASES},
         "bad_by_label": {lab: sum(1 for b in bad if b["label"] == lab) for lab in ("悪手", "疑問手", "緩手")},
         "bad_noticed": sum(1 for b in bad if b["noticed"]),  # 自分の悪手候補のうち、悪手だと思った印を付けていた数
+        "noticed_rate": rate(sum(1 for b in bad if b["noticed"]), len(bad)),
         "good_moves": sum(s.get("good", 0) for s in summaries),
         "regret_by_phase": {p: sum(s.get("regret_by_phase", {}).get(p, 0) for s in summaries) for p in PHASES},
         "surprise": {k: sum(s.get("surprise", {}).get(k, 0) for s in summaries) for k in ("total", "best", "bad")},

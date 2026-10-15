@@ -41,9 +41,16 @@ def facts(agg: dict) -> list[str]:
         out.append("悪手だと思った自分の手の印が多い段階: " + "、".join(f"{k} {regret_phase.get(k, 0)}" for k in PHASES)
                    + f"（いちばん多いのは{p}）。")
     if agg["bad_moves"]:
-        p = max(PHASES, key=lambda k: (agg["bad_by_phase"][k], -PHASES.index(k)))
-        out.append(f"自分の悪手候補は{agg['bad_moves']}回（" + "、".join(f"{k} {agg['bad_by_phase'][k]}" for k in PHASES)
-                   + f"）。いちばん多いのは{p}。")
+        r = agg.get("bad_rate_by_phase") or {}
+        if agg.get("bad_rate") is not None and any(v is not None for v in r.values()):
+            p = max((k for k in PHASES if r.get(k) is not None), key=lambda k: (r[k], -PHASES.index(k)))
+            out.append(f"自分が指した手のうち、悪手候補だった割合は{pct(agg['bad_rate'])}（"
+                       + "、".join(f"{k} {pct(r[k]) if r.get(k) is not None else '—'}" for k in PHASES)
+                       + f"）。いちばん高いのは{p}。")
+        else:
+            p = max(PHASES, key=lambda k: (agg["bad_by_phase"][k], -PHASES.index(k)))
+            out.append(f"自分の悪手候補は{agg['bad_moves']}回（" + "、".join(f"{k} {agg['bad_by_phase'][k]}" for k in PHASES)
+                       + f"）。いちばん多いのは{p}。")
         out.append(f"悪手候補のうち、解析を見る前に自分で気づけたのは{agg['bad_noticed']}回"
                    f"（{pct(agg['bad_noticed'] / agg['bad_moves'])}）。")
     c = agg["counts"]
@@ -93,6 +100,7 @@ def ai_input(agg: dict, examples: list[dict]) -> dict:
     """AIに渡す材料（数だけ。対局者名・コメント・棋譜は入れない）。"""
     return {"facts": facts(agg),
             "tags": agg.get("tags", []), "bad_by_phase": agg.get("bad_by_phase", {}),
+            "bad_rate_by_phase": {k: pct(v) for k, v in (agg.get("bad_rate_by_phase") or {}).items() if v is not None},
             "regret_by_phase": agg.get("regret_by_phase", {}),
             "examples": [{"kind": EXAMPLE_KINDS[e["kind"]], "phase": e["phase"], "date": e.get("created", ""), "ply": e["ply"],
                           **{k: v for k, v in example_text(e)}} for e in examples]}
