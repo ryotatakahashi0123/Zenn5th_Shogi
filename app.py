@@ -59,7 +59,7 @@ TOOL_LABEL = {
 
 st.set_page_config(page_title="ふりかえり将棋", page_icon="☗", layout="wide")
 st.title("ふりかえり将棋")
-st.caption("棋譜を読み込み、まず自分の感覚で手に印を付けます（悪手だと思った、迷った、驚いた、好手だと思った など）。そのあと将棋エンジンの解析と比べ、"
+st.caption("棋譜を読み込み、答えを見る前に、まず自分の感覚で手に印を付けます。そのあと将棋エンジンの判定とのずれを見せ、"
            "AIコーチが勝負の分かれ目をふりかえります。")
 
 JST = timezone(timedelta(hours=9))
