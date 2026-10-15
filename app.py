@@ -125,6 +125,14 @@ user = st.session_state["user"]
 # 手番を変えると、同じ印でも呼び名と突き合わせが変わる（例: 2手目の「予想外で驚いた」が「ほかにも指す手があった」になる）。
 # そこで、いまの手番で付けた印と入力途中の内容は消さずに手番ごとに取っておき（side_stash）、変えた先の手番の分を出す。
 # 元の手番に戻せば、取っておいた印が元どおり出る。印か入力途中の内容があるときは、変える前に確認する（confirm_side）
+NO_MARK, NO_MARK_LABEL = "none", "特に何も思わなかった"  # 印のラベルの欄の最初の選択肢（印にはならない）
+
+
+def has_input(d) -> bool:
+    """入力途中の内容に、印にする中身（ラベル・原因・コメント・迷った読み）があるか。"""
+    return bool(d.get("kind") or d.get("tags") or (d.get("note") or "").strip() or d.get("alts"))
+
+
 def switch_side(new):
     ss = st.session_state
     old = ss.get("side_now", new)
@@ -142,7 +150,7 @@ def request_side(widget):
     new, old = ss.get(widget), ss.get("side_now")
     if new is None or new == old:
         return
-    if widget != "side_input" and (ss.get("marks") or ss.get("drafts")):
+    if widget != "side_input" and (ss.get("marks") or any(has_input(d) for d in (ss.get("drafts") or {}).values())):
         ss[widget] = old  # 確認が済むまで、元の手番のままにしておく
         ss["side_change"] = new
     else:  # 棋譜入力では確認を出さない（まだ印の画面に入っていない。取っておくので、戻せば元に戻る）
@@ -158,7 +166,7 @@ def confirm_side():
     n = len(ss.get("marks", {}))
     kept = (ss.get("side_stash") or {}).get(new) or {}
     st.write(f"自分の手番を **{old}** から **{new}** に変えますか？")
-    st.write(f"変えると、{old}として付けた印（{n}件）" + ("と入力途中の内容" if ss.get("drafts") else "")
+    st.write(f"変えると、{old}として付けた印（{n}件）" + ("と入力途中の内容" if any(has_input(d) for d in (ss.get("drafts") or {}).values()) else "")
              + f"は、いったん画面から外れます。消えるわけではありません。{old}に戻せば、元どおり表示されます。")
     st.write(f"以前に{new}として付けた印（{len(kept.get('marks', {}))}件）があるので、それを表示します。" if kept.get("marks")
              else f"{new}として、印を最初から付けます。")
@@ -896,7 +904,7 @@ def keep_draft(p, alt_lines=None):
     old = drafts.get(p) or marks.get(p) or {}
     # ラベルは最初は選ばれていない（None）。選ばれていなければ None のまま持つ（印にはならない）
     k = st.session_state.get(f"kind_{p}_{my_side}") if f"kind_{p}_{my_side}" in st.session_state else old.get("kind")
-    drafts[p] = {"kind": regret.norm_kind(k, mine(p)) if k is not None else None,
+    drafts[p] = {"kind": regret.norm_kind(k, mine(p)) if k not in (None, NO_MARK) else None,
                  "tags": list(st.session_state.get(f"tags_{p}", old.get("tags", []))),
                  "note": st.session_state.get(f"note_{p}", old.get("note", "")),
                  "alts": [list(a) for a in (old.get("alts", []) if alt_lines is None else alt_lines)]}
@@ -987,7 +995,7 @@ def unmark(p):
     marks.pop(p, None)
     drafts.pop(p, None)
     st.session_state["alt_edit"] = None
-    st.session_state[f"kind_{p}_{my_side}"], st.session_state[f"tags_{p}"], st.session_state[f"note_{p}"] = None, [], ""
+    st.session_state[f"kind_{p}_{my_side}"], st.session_state[f"tags_{p}"], st.session_state[f"note_{p}"] = NO_MARK, [], ""
 
 
 def pending() -> list[int]:
@@ -1021,7 +1029,7 @@ if not st.session_state["revealed"]:
              on_change=request_side, args=("side_confirm",), format_func=lambda k: f'{"☗" if k == "先手" else "☖"}{k}（{kifu.names[0 if k == "先手" else 1] or k}）')
     st.caption("自分の手には「悪手だと思った／ほかにも指す手があった／好手だと思った」、相手の手には"
                "「悪手だと思った／予想外で驚いた／好手だと思った」の印を付けられます。印は気になった手にだけ付ければよく、"
-               "ラベルを選ばない手は「印なし」です。原因・コメント・迷った別の読みは、どれも任意です。"
+               "「特に何も思わなかった」のままの手は「印なし」です。原因・コメント・迷った別の読みは、どれも任意です。"
                "解析結果は、入力を完了してから表示します。"
                + ("エンジンの解析は、裏で先に進めています。" if ms else "思考時間が0なので、エンジンの解析はしません（印とコメントだけを記録します）。"))
     c_board, c_form = st.columns([1, 1], gap="large")
@@ -1035,11 +1043,13 @@ if not st.session_state["revealed"]:
             cur = drafts.get(ply) or marks.get(ply) or {}
             who = "自分の手" if mine(ply) else "相手の手"
             st.markdown(f"**{move_text(ply)}**（{who}）")
-            kinds = regret.MARK_KINDS
-            # 最初は何も選ばない（発案者の指示 2026-10-15）。選ばない手は「印なし」で、全部の手に印を付ける必要はない
+            # 最初は「特に何も思わなかった」（発案者の指示 2026-10-15）。印を付けるのは気になった手だけで、いったん選んだラベルも
+            # これを選び直せば取り消せる（入力途中の内容にならない）
+            kinds = [NO_MARK] + regret.MARK_KINDS
             kind = st.radio("この手をどう思いましたか？", kinds,
-                            index=kinds.index(mark_kind(ply, cur)) if cur.get("kind") or ply in marks else None,
-                            format_func=lambda k: regret.kind_label(k, moves[ply]["side"], my_side), key=f"kind_{ply}_{my_side}",
+                            index=kinds.index(mark_kind(ply, cur)) if cur.get("kind") or ply in marks else 0,
+                            format_func=lambda k: NO_MARK_LABEL if k == NO_MARK else regret.kind_label(k, moves[ply]["side"], my_side),
+                            key=f"kind_{ply}_{my_side}",
                             on_change=keep_draft, args=(ply,),
                             help="自分の手か相手の手かで、選べるラベルが変わります（上の「先手ですか、後手ですか？」で決まります）。")
             tags = st.multiselect("思い当たる原因（任意。複数選べます）", regret.CAUSE_TAGS,
@@ -1057,8 +1067,10 @@ if not st.session_state["revealed"]:
                 alt_editor(ply)
             if ply in pending():
                 st.caption("入力途中です（別の手に移っても残ります）。下のボタンを押すと印になります。")
+            kind = None if kind == NO_MARK else kind
             if kind is None:
-                st.caption("印を付けるときは、上でラベルを選んでください。気にならない手は、何も選ばずに次の手へ進んでかまいません。")
+                st.caption("気になった手だけ、上でラベルを選んで印を付けます。「特に何も思わなかった」の手は、そのまま次の手へ進んでかまいません。"
+                           + ("この手の印を外すときは、下の「この手の印を取り消す」を押してください。" if ply in marks else ""))
             if st.button("印を更新する" if ply in marks else "この印を付ける", type="primary", disabled=kind is None):
                 try:
                     same = [p for p, m in marks.items() if p != ply and mine(p) == mine(ply) and mark_kind(p, m) == kind]
