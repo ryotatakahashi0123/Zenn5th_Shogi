@@ -125,3 +125,14 @@ def test_sections():
     assert [(m["ply"], m["group"]) for m in secs[0]["items"]] == [(3, "一致"), (5, "データだけ")]
     assert secs[0]["counts"] == [("一致", 1), ("感覚だけ", 0), ("データだけ", 1)]
     assert secs[1]["counts"] == [] and secs[4]["items"][0]["group"] == "" and secs[4]["items"][0]["ply"] == 2
+
+
+def test_norm_kind_reads_labels():
+    """画面の欄が呼び名を返しても、印の種類に直す（手番を変えたあとに「予想外で驚いた」が残って止まった不具合）。"""
+    from shogi_analyzer.regret import norm_kind
+    assert norm_kind("予想外で驚いた", False) == "other"
+    assert norm_kind("ほかにも指す手があった", True) == "other"
+    assert norm_kind("悪手だと思った", True) == "bad"
+    assert norm_kind("好手だと思った", False) == "good"
+    assert norm_kind("good", True) == "good"
+    assert norm_kind(None, True) == "bad" and norm_kind("regret", False) == "other"

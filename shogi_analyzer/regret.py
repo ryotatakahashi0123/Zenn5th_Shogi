@@ -62,9 +62,14 @@ def section_title(s: dict) -> str:
 
 
 def norm_kind(kind: str | None, mine: bool) -> str:
-    """印の種類を bad / other / good にそろえる。以前の regret は、自分の手なら bad、相手の手なら other。"""
+    """印の種類を bad / other / good にそろえる。以前の regret は、自分の手なら bad、相手の手なら other。
+    呼び名（「予想外で驚いた」など）が来たときも種類に直す（画面の欄が表示名を返すことがあるため）。"""
     if kind in (None, "regret"):
         return "bad" if mine else "other"
+    if kind not in MARK_KINDS:
+        named = {label: k for (_, k), label in LABELS.items()}
+        if kind in named:
+            return named[kind]
     return kind
 
 
