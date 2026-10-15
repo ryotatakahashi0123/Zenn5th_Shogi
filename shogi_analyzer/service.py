@@ -12,11 +12,11 @@ import cshogi
 import cshogi.KIF
 
 from .usi_engine import UsiEngine, AnalysisResult
-from .kifu_analysis import Kifu, MAX_PLIES, analyze_kifu, validate_kifu, winrate
+from .kifu_analysis import Kifu, MAX_PLIES, analyze_kifu, kif_move, validate_kifu, winrate
 
 DEEP_MS = 2000       # 深掘りの思考時間
 DEEP_MULTIPV = 3     # 深掘りで出す候補手の数
-LINE_PLIES = 12      # 画面・ノート・AIコーチに出す読み筋の長さ（発案者の指示 2026-10-14: その先の展開まで出す）
+LINE_PLIES = 12      # 画面・ノート・AIエージェントに出す読み筋の長さ（発案者の指示 2026-10-14: その先の展開まで出す）
 EXTEND_MS = 400      # 読み筋を伸ばすときの1回の思考時間
 EXTEND_CALLS = 3     # 読み筋を伸ばすために読み直す回数の上限（1つの読み筋あたり）
 PROMOTED_FILL = "#d0021b"  # 成り駒の色（発案者の指示 2026-10-14。成ったことがひと目で分かるように）
@@ -50,7 +50,7 @@ def move_jp(board: cshogi.Board, usi: str) -> str:
     m = board.move_from_usi(usi)
     if not m:
         return usi
-    return mark(board) + re.sub(r"\(\d\d\)$", "", cshogi.KIF.move_to_kif(m))
+    return mark(board) + re.sub(r"\(\d\d\)$", "", kif_move(board, m))
 
 
 def pv_jp(board: cshogi.Board, pv: list[str], limit: int = 6) -> list[str]:
@@ -228,7 +228,7 @@ def move_list(kifu: Kifu) -> list[dict]:
     board = cshogi.Board(kifu.start_sfen)
     out = []
     for i, m in enumerate(kifu.moves, start=1):
-        out.append({"ply": i, "side": mark(board), "move_jp": cshogi.KIF.move_to_kif(m)})
+        out.append({"ply": i, "side": mark(board), "move_jp": kif_move(board, m)})
         board.push(m)
     return out
 
@@ -358,9 +358,14 @@ def red_promoted(svg: str) -> str:
     return re.sub(r'(<g id="(?:black|white)-(?:pro-[a-z]+|horse|dragon)")', rf'\1 fill="{PROMOTED_FILL}"', svg)
 
 
+def king_glyphs(svg: str) -> str:
+    """cshogi の図は先手・後手とも「王」なので、後手の玉を「玉」にする（先手は「王」のまま。発案者の指示 2026-10-15）。"""
+    return re.sub(r'(<g id="white-king"[^>]*><text[^>]*>)&#29579;', r"\1&#29577;", svg)
+
+
 def to_svg(board: cshogi.Board, lastmove: int | None = None, scale: float = 2.0) -> str:
-    """cshogi の局面図（SVG）に、成り駒の色を付けたもの。"""
-    return red_promoted(str(board.to_svg(lastmove=lastmove, scale=scale)))
+    """cshogi の局面図（SVG）に、成り駒の色を付け、後手の玉を「玉」にしたもの。"""
+    return king_glyphs(red_promoted(str(board.to_svg(lastmove=lastmove, scale=scale))))
 
 
 def board_svg(kifu: Kifu, ply: int, scale: float = 2.0, background: str | None = "#f5deb3") -> str:

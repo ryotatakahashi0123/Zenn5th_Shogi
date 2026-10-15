@@ -192,10 +192,17 @@ def write_csv(rows: list[MoveRow], path: str | Path):
             w.writerow(asdict(r))
 
 
+def kif_move(board: cshogi.Board, move: int) -> str:
+    """指し手の日本語表記（KIF）。先手の玉は「王」、後手の玉は「玉」と書く（発案者の指示 2026-10-15）。
+    board は指す前の局面（手番で先手か後手かを決める）。玉以外の手には「玉」の字が出ないので、そのまま置き換えてよい。"""
+    s = cshogi.KIF.move_to_kif(move)
+    return s.replace("玉", "王") if board.turn == cshogi.BLACK else s
+
+
 def _usi_to_jp(board: cshogi.Board, usi: str) -> str:
     if usi in ("resign", "win", "none", ""):
         return {"resign": "投了", "win": "勝ち宣言"}.get(usi, usi)
     try:
-        return cshogi.KIF.move_to_kif(board.move_from_usi(usi))
+        return kif_move(board, board.move_from_usi(usi))
     except Exception:
         return usi

@@ -214,7 +214,7 @@ def _norm(s: str) -> str:
     s = s.translate(_Z)  # 列の数字を全角に
     if len(s) >= 2 and s[1] in "１２３４５６７８９":  # 段は漢数字に
         s = s[0] + s[1].translate(_KANJI) + s[2:]
-    return s.replace("不成", "").replace("打", "")
+    return s.replace("不成", "").replace("打", "").replace("王", "玉")  # 先手の玉は「王」と書くので、どちらでも当たるように
 
 
 def resolve_move(kifu: Kifu, ply: int, move: str) -> str:
