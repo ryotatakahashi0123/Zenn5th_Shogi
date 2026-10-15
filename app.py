@@ -120,6 +120,53 @@ if not st.session_state.get("user"):
     st.stop()
 user = st.session_state["user"]
 
+
+# ---- 自分の手番（先手／後手）の切り替え（発案者の指示 2026-10-15） ----
+# 手番を変えると、同じ印でも呼び名と突き合わせが変わる（例: 2手目の「予想外で驚いた」が「ほかにも指す手があった」になる）。
+# そこで、いまの手番で付けた印と入力途中の内容は消さずに手番ごとに取っておき（side_stash）、変えた先の手番の分を出す。
+# 元の手番に戻せば、取っておいた印が元どおり出る。印か入力途中の内容があるときは、変える前に確認する（confirm_side）
+def switch_side(new):
+    ss = st.session_state
+    old = ss.get("side_now", new)
+    if new != old:
+        stash = ss.setdefault("side_stash", {})
+        stash[old] = {"marks": ss.get("marks", {}), "drafts": ss.get("drafts", {})}
+        back = stash.pop(new, None) or {"marks": {}, "drafts": {}}
+        ss.update(marks=back["marks"], drafts=back["drafts"], alt_edit=None)
+    ss.update(side=new, side_now=new, side_change=None)
+
+
+def request_side(widget):
+    """手番の欄（サイドバー side・印の入力画面 side_confirm・棋譜入力 side_input）が変わったとき。"""
+    ss = st.session_state
+    new, old = ss.get(widget), ss.get("side_now")
+    if new is None or new == old:
+        return
+    if widget != "side_input" and (ss.get("marks") or ss.get("drafts")):
+        ss[widget] = old  # 確認が済むまで、元の手番のままにしておく
+        ss["side_change"] = new
+    else:  # 棋譜入力では確認を出さない（まだ印の画面に入っていない。取っておくので、戻せば元に戻る）
+        switch_side(new)
+
+
+@st.dialog("自分の手番を変える", dismissible=False)
+def confirm_side():
+    ss = st.session_state
+    if not ss.get("side_change"):  # ボタンを押した（ダイアログの中だけが描き直されるので、画面全体を描き直して閉じる）
+        st.rerun()
+    new, old = ss["side_change"], ss["side_now"]
+    n = len(ss.get("marks", {}))
+    kept = (ss.get("side_stash") or {}).get(new) or {}
+    st.write(f"自分の手番を **{old}** から **{new}** に変えますか？")
+    st.write(f"変えると、{old}として付けた印（{n}件）" + ("と入力途中の内容" if ss.get("drafts") else "")
+             + f"は、いったん画面から外れます。消えるわけではありません。{old}に戻せば、元どおり表示されます。")
+    st.write(f"以前に{new}として付けた印（{len(kept.get('marks', {}))}件）があるので、それを表示します。" if kept.get("marks")
+             else f"{new}として、印を最初から付けます。")
+    b1, b2 = st.columns(2)
+    b1.button(f"{new}に変える", type="primary", on_click=switch_side, args=(new,), use_container_width=True)
+    b2.button(f"やめる（{old}のまま）", on_click=lambda: ss.update(side_change=None), use_container_width=True)
+
+
 with st.sidebar:
     st.markdown(f"ログイン中: **{user}**")
     # どの画面からでも最初の画面に戻れる（付けた印・解析結果・裏の処理はそのまま残る）
@@ -130,7 +177,9 @@ with st.sidebar:
     # 保存した対局を開き直すとき、手番と思考時間をその対局のものに戻せるよう、値を session_state に持つ
     st.session_state.setdefault("side", "先手")
     st.session_state.setdefault("ms", 400)
-    my_side = regret.SIDES[st.radio("自分の手番", list(regret.SIDES), horizontal=True, key="side")]
+    st.session_state.setdefault("side_now", st.session_state["side"])
+    my_side = regret.SIDES[st.radio("自分の手番", list(regret.SIDES), horizontal=True, key="side",
+                                    on_change=request_side, args=("side",))]
     ms = int(st.number_input("1手あたりの思考時間（ミリ秒）", 0, 3000, step=100, key="ms",
                              help="0 にするとエンジンで解析せず、印とコメントだけを記録します。解析するときは 100〜3000。"
                                   "解析のあとで変えると、解析をやり直します（AIコーチとのやり取りも消えます）。"))
@@ -144,6 +193,8 @@ with st.sidebar:
     st.markdown("- 探索: やねうら王 (GPLv3)\n- 評価関数: 水匠5（たややん氏）\n- 棋譜処理: cshogi (GPLv3)\n"
                 "- AI: Gemini（Vertex AI）+ ADK")
     st.caption("評価はエンジンによる参考値です。対局者名はAIに送りません。")
+if st.session_state.get("side_change"):
+    confirm_side()
 
 
 def tool_text(name, args):
@@ -320,7 +371,8 @@ def open_game(game_id):
                   revealed=done, mark_ply=0, ply_keep=0, key=(digest, saved_ms) if analyzed else None,
                   rows=res.get("rows") or [], coach=None,
                   chat=[tuple(c) for c in res.get("chat", [])], actions=list(res.get("actions", [])), saved=None,
-                  note=None, job=None, pipe=None, ms=saved_ms, side=side, mode="study", open_error=None)
+                  note=None, job=None, pipe=None, ms=saved_ms, side=side, side_now=side, side_stash={},
+                  side_change=None, mode="study", open_error=None)
     except Exception as e:
         ss["open_error"] = f"対局を開けませんでした: {e}"
 
@@ -337,7 +389,7 @@ def start_study(name, label, data, consent):
     src = st.session_state["src"]
     if not src or src["digest"] != digest:
         src = {"id": datetime.now(JST).strftime("%Y%m%d") + "-" + uuid.uuid4().hex[:12], "digest": digest, "name": name, "label": label, "data": data, "saved": None}
-        st.session_state.update(src=src, marks={}, drafts={}, revealed=False, mark_ply=0, ply_keep=0, key=None)
+        st.session_state.update(src=src, marks={}, drafts={}, side_stash={}, revealed=False, mark_ply=0, ply_keep=0, key=None)
     st.session_state["entry_used"] = list(st.session_state.get("entry", []))  # この時点の盤面入力（次に別の棋譜を入れるとき、無視する）
     src.update(consent=consent, save_error=None)
     if consent and not src["saved"]:  # 保存は本人が同意したときだけ
@@ -635,7 +687,7 @@ def kifu_zone():
         # 発案者の指示 2026-10-15）。選んだ値はサイドバーの「自分の手番」と同じ side に入れる
         side_in = st.radio("あなたは先手ですか、後手ですか？（必須）", list(regret.SIDES), index=None, horizontal=True,
                            key="side_input", format_func=lambda k: f'{"☗" if k == "先手" else "☖"}{k}',
-                           on_change=lambda: st.session_state.update(side=st.session_state["side_input"]),
+                           on_change=request_side, args=("side_input",),
                            help="自分の手か相手の手かで、付けられる印のラベルが変わります。印を付ける画面でも直せます。")
         prefs = st.session_state.setdefault("prefs", load_prefs())
         consent = st.checkbox("この棋譜を保存し、これまでの記録に加えることに同意する",
@@ -842,7 +894,8 @@ def pick_point():
 
 def keep_draft(p, alt_lines=None):
     old = drafts.get(p) or marks.get(p) or {}
-    drafts[p] = {"kind": st.session_state.get(f"kind_{p}", mark_kind(p, old)),
+    drafts[p] = {"kind": regret.norm_kind(st.session_state.get(f"kind_{p}_{my_side}"), mine(p)) if f"kind_{p}_{my_side}" in st.session_state
+                         else mark_kind(p, old),
                  "tags": list(st.session_state.get(f"tags_{p}", old.get("tags", []))),
                  "note": st.session_state.get(f"note_{p}", old.get("note", "")),
                  "alts": [list(a) for a in (old.get("alts", []) if alt_lines is None else alt_lines)]}
@@ -933,7 +986,7 @@ def unmark(p):
     marks.pop(p, None)
     drafts.pop(p, None)
     st.session_state["alt_edit"] = None
-    st.session_state[f"kind_{p}"], st.session_state[f"tags_{p}"], st.session_state[f"note_{p}"] = "bad", [], ""
+    st.session_state[f"kind_{p}_{my_side}"], st.session_state[f"tags_{p}"], st.session_state[f"note_{p}"] = "bad", [], ""
 
 
 def pending() -> list[int]:
@@ -958,16 +1011,12 @@ def marks_table():
         hide_index=True, use_container_width=True)
 
 
-def set_side():
-    st.session_state["side"] = st.session_state["side_confirm"]
-
-
 if not st.session_state["revealed"]:
     st.markdown("#### 1. 自分の感覚で、手に印を付ける")
     # まず自分の手番を確かめる（自分の手か相手の手かで、選べるラベルが変わる）。サイドバーの「自分の手番」と同じ値
     st.session_state["side_confirm"] = st.session_state["side"]
     st.radio("あなたは先手ですか、後手ですか？", list(regret.SIDES), horizontal=True, key="side_confirm",
-             on_change=set_side, format_func=lambda k: f'{"☗" if k == "先手" else "☖"}{k}（{kifu.names[0 if k == "先手" else 1] or k}）')
+             on_change=request_side, args=("side_confirm",), format_func=lambda k: f'{"☗" if k == "先手" else "☖"}{k}（{kifu.names[0 if k == "先手" else 1] or k}）')
     st.caption("自分の手には「悪手だと思った／ほかにも指す手があった／好手だと思った」、相手の手には"
                "「悪手だと思った／予想外で驚いた／好手だと思った」の印を付けられます。原因・コメント・迷った別の読みは、どれも任意です。"
                "解析結果は、入力を完了してから表示します。"
@@ -985,7 +1034,7 @@ if not st.session_state["revealed"]:
             st.markdown(f"**{move_text(ply)}**（{who}）")
             kinds = regret.MARK_KINDS
             kind = st.radio("この手をどう思いましたか？", kinds, index=kinds.index(mark_kind(ply, cur)),
-                            format_func=lambda k: regret.kind_label(k, moves[ply]["side"], my_side), key=f"kind_{ply}",
+                            format_func=lambda k: regret.kind_label(k, moves[ply]["side"], my_side), key=f"kind_{ply}_{my_side}",
                             on_change=keep_draft, args=(ply,),
                             help="自分の手か相手の手かで、選べるラベルが変わります（上の「先手ですか、後手ですか？」で決まります）。")
             tags = st.multiselect("思い当たる原因（任意。複数選べます）", regret.CAUSE_TAGS,
