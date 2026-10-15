@@ -76,24 +76,24 @@ def test_html_escapes_user_text():
     # 好手の表は回答より後ろ。本人のコメントは文字として埋め込む
     assert page.index("<h2>好手</h2>") > page.index(ANSWER)
     assert "<b>うまく受けた</b>" not in page and "&lt;b&gt;うまく受けた&lt;/b&gt;" in page
-    assert "window.print()" in page and "@page" in page and "AIコーチの所感" in page
+    assert "window.print()" in page and "@page" in page and "AIエージェントの所感" in page
     # 読み筋は回答にだけ出る（解析の行にあるUSIの手順を日本語にしたもの）。無い手には欄を出さない
     front, back = page.split(ANSWER, 1)
     assert "読み筋" not in front and back.count("最善手からの読み筋</b>") == 1
     assert "<b>最善手からの読み筋</b>: ▲３四飛 △７六飛" in back
     assert "<b>実戦の手からの読み筋</b>: ▲６六角 △８九飛成 ▲２二角成" in back
-    assert "AIコーチの所感" not in report.to_html(_data()[1], k)  # 講評が無ければ欄も出さない
+    assert "AIエージェントの所感" not in report.to_html(_data()[1], k)  # 講評が無ければ欄も出さない
 
 
 def test_questions_and_answers_go_last():
     k, d = _data("### 総評\n講評", qa=QA)
     assert d["qa"][0] == ("15手目で<u>３四飛</u>なら どうだった？", [("h", "結論"), ("p", "▲３四飛なら**互角**でした。"), ("li", "先手の勝率 55%")])
     page = report.to_html(d, k)
-    tail = page[page.index("AIコーチへの質問と回答"):]
-    assert page.index("AIコーチへの質問と回答") > page.index("AIコーチの所感")  # 講評より後ろ（末尾）
+    tail = page[page.index("AIエージェントへの質問と回答"):]
+    assert page.index("AIエージェントへの質問と回答") > page.index("AIエージェントの所感")  # 講評より後ろ（末尾）
     assert "<h3>質問: 15手目で&lt;u&gt;３四飛&lt;/u&gt;なら どうだった？</h3>" in tail and "<u>" not in page
     assert "<b>互角</b>" in tail and tail.index("もう1つ質問") > tail.index("先手の勝率 55%")
-    assert "AIコーチへの質問と回答" not in report.to_html(_data("### 総評\n講評")[1], k)  # 質問が無ければ欄も出さない
+    assert "AIエージェントへの質問と回答" not in report.to_html(_data("### 総評\n講評")[1], k)  # 質問が無ければ欄も出さない
     assert len(report.to_pdf(d, k)) > len(report.to_pdf(_data("### 総評\n講評")[1], k))
 
 
