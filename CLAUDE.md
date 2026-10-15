@@ -237,6 +237,9 @@
   保存先は `games/<利用者>/trend.json`（30日削除の対象）。局面例は `learn.examples`（1局ごとに種類別2つまで、summary.json に SFEN で保存）
   から `learn.pick_examples` で4つまで。Gemini は道具を持たないエージェント（`trend_writer`）で、箇条書きだけを書く。
   `trend.verify` が、材料に無い数字を含む行・120字超の行を捨て、8行までにする。3ページに収まることを試験で確かめている
+- **玉の字**（発案者の指示 2026-10-15）: 先手の玉は「王」、後手の玉は「玉」。局面図（`service.king_glyphs`。cshogi の図は両方「王」）、
+  PDF の局面図（`report.BoardDiagram`）、指し手の表記（`kifu_analysis.kif_move`。cshogi は両方「玉」）。
+  AIエージェントの `compare_move` は「王」「玉」のどちらで書かれても同じ手として読む（`tools._norm`）
 - **成り駒の色**: `service.to_svg`（cshogi の図の成り駒の定義に色を付ける）と、PDF の `BoardDiagram`。色は `service.PROMOTED_FILL`
 
 ## 動かし方（Cloud Shell）
