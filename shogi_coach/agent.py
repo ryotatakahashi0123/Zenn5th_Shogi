@@ -1,4 +1,4 @@
-"""ふりかえり将棋のコーチエージェント（ADK + Gemini on Vertex AI）。
+"""ふりかえり将棋のAIエージェント（ADK + Gemini on Vertex AI）。
 
 役割分担: 指し手の良し悪しはすべて将棋エンジン（ツール）の数値で決め、
 Gemini は「どの局面を深く調べるか」を自分で選び、結果を人に分かる言葉にする。
@@ -29,7 +29,7 @@ from .tools import TOOLS
 
 MODEL = os.environ.get("COACH_MODEL", "gemini-3.8-flash")
 
-INSTRUCTION = """あなたは将棋の対局をふりかえるコーチです。相手はアマチュアの将棋ファンです。
+INSTRUCTION = """あなたは将棋の対局をふりかえるAIエージェントです。相手はアマチュアの将棋ファンです。
 
 ## 絶対に守ること
 - 指し手の良し悪し、勝率、読み筋は、必ずツールの結果だけを根拠にする。自分で将棋を読んで手を作らない。
@@ -115,7 +115,7 @@ def _on_tool_error(tool, args, tool_context, error):
 root_agent = Agent(
     name="shogi_coach",
     model=MODEL,
-    description="将棋エンジンの解析結果をもとに対局をふりかえるコーチ",
+    description="将棋エンジンの解析結果をもとに対局をふりかえるAIエージェント",
     instruction=INSTRUCTION,
     tools=TOOLS,
     generate_content_config=types.GenerateContentConfig(temperature=0.3),

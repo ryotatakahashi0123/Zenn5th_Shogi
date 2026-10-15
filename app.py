@@ -145,7 +145,7 @@ def reset_page():
         confirm = st.text_input("新しいパスワード（確認）", type="password")
         go = st.form_submit_button("パスワードを初期化する", type="primary")
     st.caption("利用者名と、登録したときの生年月日が一致すれば、パスワードを新しいものに変えます。"
-               "生年月日の登録が始まる前（2026-10-15 より前）に登録した利用者は、ここでは初期化できません。")
+               "生年月日を登録していない利用者は、ここでは初期化できません（ログインしたあと、左の欄の「生年月日を登録する」で登録できます）。")
     if go:
         try:
             auth.reset_password(name, birth, password, confirm)
@@ -228,12 +228,41 @@ def confirm_side():
     b2.button(f"やめる（{old}のまま）", on_click=lambda: ss.update(side_change=None), use_container_width=True)
 
 
+def birth_section():
+    """生年月日の登録（パスワードを忘れたときの初期化に使う）。画面の登録より前の利用者も、ここで登録できる。"""
+    try:
+        has = auth.has_birth(user)
+    except Exception:
+        return
+    if st.session_state.pop("birth_done", False):
+        st.success("生年月日を登録しました。")
+    with st.expander("生年月日（登録済み・変更する）" if has else "生年月日を登録する", expanded=False):
+        if not has:
+            st.caption("登録すると、パスワードを忘れたときにログイン画面から初期化できます。")
+        with st.form("birth"):
+            birth = birth_input()
+            password = st.text_input("いまのパスワード", type="password")
+            go = st.form_submit_button("登録する" if not has else "変更する")
+        st.caption("保存するのは照合用のハッシュだけです（生年月日そのものは保存しません）。")
+        if go:
+            try:
+                auth.set_birth(user, password, birth)
+            except ValueError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"登録に失敗しました: {e}")
+            else:
+                st.session_state["birth_done"] = True
+                st.rerun()
+
+
 with st.sidebar:
     st.markdown(f"ログイン中: **{user}**")
     # どの画面からでも最初の画面に戻れる（付けた印・解析結果・裏の処理はそのまま残る）
     st.button("最初の画面に戻る", on_click=lambda: st.session_state.update(mode="home"), use_container_width=True,
               disabled=st.session_state.get("mode", "home") == "home")
     st.button("ログアウト", on_click=logout, use_container_width=True)
+    birth_section()
     st.markdown("---")
     # 保存した対局を開き直すとき、手番と思考時間をその対局のものに戻せるよう、値を session_state に持つ
     st.session_state.setdefault("side", "先手")
@@ -251,8 +280,7 @@ with st.sidebar:
         st.caption("思考時間が0なので、エンジンの解析はしません。")
     st.markdown("---")
     st.markdown("**使用ソフトウェア**")
-    st.markdown("- 探索: やねうら王 (GPLv3)\n- 評価関数: 水匠5（たややん氏）\n- 棋譜処理: cshogi (GPLv3)\n"
-                "- AI: Gemini（Vertex AI）+ ADK")
+    st.markdown(credits.sidebar_markdown())
     st.caption("評価はエンジンによる参考値です。対局者名はAIに送りません。")
 if st.session_state.get("side_change"):
     confirm_side()

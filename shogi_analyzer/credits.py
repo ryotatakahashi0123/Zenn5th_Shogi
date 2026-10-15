@@ -25,3 +25,15 @@ def footer_markdown() -> str:
         "このサービスのソースコード（GPL-3.0）は [GitHub](" + SOURCE_URL + ") で公開しています"
         "（ほかのソフトウェアのライセンスは [THIRD_PARTY_LICENSES.md](" + THIRD_PARTY_URL + ")）。"
     )
+
+
+def sidebar_markdown() -> str:
+    """サイドバーの「使用ソフトウェア」（Markdown）。やねうら王は GitHub と Wiki へのリンクを付ける。"""
+    return (
+        "- 探索: やねうら王（GPL-3.0）\n"
+        "  - GitHub: " + YANEURAOU_GITHUB + "\n"
+        "  - Wiki: " + YANEURAOU_WIKI + "\n"
+        "- 評価関数: [水匠5](" + SUISHO5_RELEASE + ")（たややん氏）\n"
+        "- 棋譜処理: cshogi（GPL-3.0）\n"
+        "- AI: Gemini（Vertex AI）+ ADK"
+    )
