@@ -894,8 +894,9 @@ def pick_point():
 
 def keep_draft(p, alt_lines=None):
     old = drafts.get(p) or marks.get(p) or {}
-    drafts[p] = {"kind": regret.norm_kind(st.session_state.get(f"kind_{p}_{my_side}"), mine(p)) if f"kind_{p}_{my_side}" in st.session_state
-                         else mark_kind(p, old),
+    # ラベルは最初は選ばれていない（None）。選ばれていなければ None のまま持つ（印にはならない）
+    k = st.session_state.get(f"kind_{p}_{my_side}") if f"kind_{p}_{my_side}" in st.session_state else old.get("kind")
+    drafts[p] = {"kind": regret.norm_kind(k, mine(p)) if k is not None else None,
                  "tags": list(st.session_state.get(f"tags_{p}", old.get("tags", []))),
                  "note": st.session_state.get(f"note_{p}", old.get("note", "")),
                  "alts": [list(a) for a in (old.get("alts", []) if alt_lines is None else alt_lines)]}
@@ -986,7 +987,7 @@ def unmark(p):
     marks.pop(p, None)
     drafts.pop(p, None)
     st.session_state["alt_edit"] = None
-    st.session_state[f"kind_{p}_{my_side}"], st.session_state[f"tags_{p}"], st.session_state[f"note_{p}"] = "bad", [], ""
+    st.session_state[f"kind_{p}_{my_side}"], st.session_state[f"tags_{p}"], st.session_state[f"note_{p}"] = None, [], ""
 
 
 def pending() -> list[int]:
@@ -995,9 +996,10 @@ def pending() -> list[int]:
         note = " ".join(d["note"].split())[:regret.MAX_NOTE]
         tags, lines = d["tags"], d.get("alts", [])
         if p not in marks:
-            return bool(mark_kind(p, d) != "bad" or tags or note or lines)
+            return bool(d.get("kind") or tags or note or lines)
         m = marks[p]
-        return (mark_kind(p, d), tags, note, lines) != (mark_kind(p, m), m["tags"], m["note"], m.get("alts", []))
+        kind = mark_kind(p, d) if d.get("kind") else mark_kind(p, m)
+        return (kind, tags, note, lines) != (mark_kind(p, m), m["tags"], m["note"], m.get("alts", []))
     return sorted(p for p, d in drafts.items() if differs(p, d))
 
 
@@ -1018,7 +1020,8 @@ if not st.session_state["revealed"]:
     st.radio("あなたは先手ですか、後手ですか？", list(regret.SIDES), horizontal=True, key="side_confirm",
              on_change=request_side, args=("side_confirm",), format_func=lambda k: f'{"☗" if k == "先手" else "☖"}{k}（{kifu.names[0 if k == "先手" else 1] or k}）')
     st.caption("自分の手には「悪手だと思った／ほかにも指す手があった／好手だと思った」、相手の手には"
-               "「悪手だと思った／予想外で驚いた／好手だと思った」の印を付けられます。原因・コメント・迷った別の読みは、どれも任意です。"
+               "「悪手だと思った／予想外で驚いた／好手だと思った」の印を付けられます。印は気になった手にだけ付ければよく、"
+               "ラベルを選ばない手は「印なし」です。原因・コメント・迷った別の読みは、どれも任意です。"
                "解析結果は、入力を完了してから表示します。"
                + ("エンジンの解析は、裏で先に進めています。" if ms else "思考時間が0なので、エンジンの解析はしません（印とコメントだけを記録します）。"))
     c_board, c_form = st.columns([1, 1], gap="large")
@@ -1033,7 +1036,9 @@ if not st.session_state["revealed"]:
             who = "自分の手" if mine(ply) else "相手の手"
             st.markdown(f"**{move_text(ply)}**（{who}）")
             kinds = regret.MARK_KINDS
-            kind = st.radio("この手をどう思いましたか？", kinds, index=kinds.index(mark_kind(ply, cur)),
+            # 最初は何も選ばない（発案者の指示 2026-10-15）。選ばない手は「印なし」で、全部の手に印を付ける必要はない
+            kind = st.radio("この手をどう思いましたか？", kinds,
+                            index=kinds.index(mark_kind(ply, cur)) if cur.get("kind") or ply in marks else None,
                             format_func=lambda k: regret.kind_label(k, moves[ply]["side"], my_side), key=f"kind_{ply}_{my_side}",
                             on_change=keep_draft, args=(ply,),
                             help="自分の手か相手の手かで、選べるラベルが変わります（上の「先手ですか、後手ですか？」で決まります）。")
@@ -1043,7 +1048,8 @@ if not st.session_state["revealed"]:
                                 key=f"note_{ply}", on_change=keep_draft, args=(ply,),
                                 placeholder={"good": "例: 受けに回ったのが良かった",
                                              "other": "例: ３四飛と迷ったが、攻めを急いだ" if mine(ply) else "例: この手は全く読んでいなかった",
-                                             "bad": "例: 攻め合いで勝てると思い込んでいた" if mine(ply) else "例: ここで咎められると思った"}[kind])
+                                             "bad": "例: 攻め合いで勝てると思い込んでいた" if mine(ply) else "例: ここで咎められると思った"
+                                             }.get(kind, "例: 気になったことを書いておく"))
             n_alts = len(cur.get("alts", []))
             with st.expander(f"迷った別の読み（{n_alts}つ）" if n_alts else "迷った別の読みを入れる（任意）",
                              expanded=bool(n_alts) or (st.session_state.get("alt_edit") or {}).get("ply") == ply
@@ -1051,7 +1057,9 @@ if not st.session_state["revealed"]:
                 alt_editor(ply)
             if ply in pending():
                 st.caption("入力途中です（別の手に移っても残ります）。下のボタンを押すと印になります。")
-            if st.button("印を更新する" if ply in marks else "この印を付ける", type="primary"):
+            if kind is None:
+                st.caption("印を付けるときは、上でラベルを選んでください。気にならない手は、何も選ばずに次の手へ進んでかまいません。")
+            if st.button("印を更新する" if ply in marks else "この印を付ける", type="primary", disabled=kind is None):
                 try:
                     same = [p for p, m in marks.items() if p != ply and mine(p) == mine(ply) and mark_kind(p, m) == kind]
                     if len(same) >= regret.MAX_MARKS:
