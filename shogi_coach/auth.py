@@ -94,6 +94,28 @@ def register(name: str, password: str, confirm: str, code: str = "", birth: date
     return name
 
 
+def has_birth(name: str) -> bool:
+    return bool(load_users().get(name, {}).get("birth"))
+
+
+def set_birth(name: str, password: str, birth, now: float | None = None) -> None:
+    """ログイン中の利用者が、生年月日を登録する（または変える）。いまのパスワードで本人を確かめる。
+
+    画面の登録より前の利用者が、パスワードを忘れたときの初期化を使えるようにするため（発案者の指示 2026-10-15）。
+    """
+    now = time.time() if now is None else now
+    key = "birth:" + name
+    _locked(key, now)
+    check_birth(birth)
+    users = load_users()
+    ok = name in users and verify(users[name], password)
+    _count(key, ok, now)
+    if not ok:
+        raise ValueError("パスワードが違います")
+    users[name]["birth"] = hash_password(birth_text(birth))
+    save_users(users)
+
+
 def _locked(key: str, now: float) -> None:
     n, until = _fails.get(key, (0, 0.0))
     if now < until:

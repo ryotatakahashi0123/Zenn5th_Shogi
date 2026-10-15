@@ -187,3 +187,23 @@ def test_reset_password_with_birth(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="しばらく"):
         auth.reset_password("hanako", date(2000, 2, 29), "newpassword", "newpassword", now=11)
     assert auth.reset_password("hanako", date(2000, 2, 29), "newpassword", "newpassword", now=11 + auth.LOCK_SECONDS)
+
+
+def test_set_birth_for_existing_user(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "BUCKET", "")
+    monkeypatch.setattr(storage, "DATA_DIR", tmp_path)
+    auth._fails.clear()
+    auth.add_user("ryota", "oldpass")  # 生年月日の無い、以前の利用者
+    assert not auth.has_birth("ryota")
+    with pytest.raises(ValueError, match="パスワードが違います"):
+        auth.set_birth("ryota", "wrong", date(1990, 5, 1), now=0)
+    with pytest.raises(ValueError, match="生年月日"):
+        auth.set_birth("ryota", "oldpass", None, now=0)
+    auth.set_birth("ryota", "oldpass", date(1990, 5, 1), now=0)
+    assert auth.has_birth("ryota") and auth.login("ryota", "oldpass")
+    assert auth.reset_password("ryota", date(1990, 5, 1), "newpassword", "newpassword", now=0) == "ryota"
+    for _ in range(auth.MAX_FAILS):  # 続けて間違えると止める
+        with pytest.raises(ValueError, match="パスワードが違います"):
+            auth.set_birth("ryota", "wrong", date(1990, 5, 1), now=10)
+    with pytest.raises(ValueError, match="しばらく"):
+        auth.set_birth("ryota", "newpassword", date(1990, 5, 1), now=11)

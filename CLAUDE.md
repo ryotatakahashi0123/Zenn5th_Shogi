@@ -70,7 +70,7 @@
 - **パスワードを忘れた場合**（発案者の指示 2026-10-15）: 登録で生年月日を必須にし、塩付き scrypt のハッシュ（`users.json` の `birth`）だけを持つ。
   ログイン画面の「パスワードを忘れた場合」→ `app.reset_page` → `auth.reset_password`。利用者名と生年月日が一致すれば新しいパスワード（8文字以上）にする。
   一致しないときは利用者の有無が分からない同じ文。続けて5回間違えると5分止める（キー `reset:<名前>`。プロセス内だけ）。
-  生年月日は推測されやすい情報なので、パスワードほど強い確認ではない。生年月日の無い以前の利用者は管理者が `tools/add_user.py` で行う（生年月日は残す）
+  生年月日は推測されやすい情報なので、パスワードほど強い確認ではない。生年月日の無い以前の利用者は、ログイン後のサイドバー「生年月日を登録する」（`app.birth_section` → `auth.set_birth`。いまのパスワードで本人確認、5回続けて間違えると5分止める）で登録する（発案者の指示 2026-10-15）。管理者の `tools/add_user.py` でパスワードを変えても生年月日は残す
 - 最初の利用者は、手元（`data/auth/users.json`）と公開サービスのバケット（`auth/users.json`）の両方に登録済み
 - **保存先**（`shogi_coach/storage.py`）: `BUCKET` があれば Cloud Storage、無ければ `./data`（.gitignore 済み。自動では消えない）。
   `games/<利用者>/<対局ID>/` に棋譜・`summary.json`（数だけの集計）・`result.json`（解析の行、印、AIとのやり取り）。
@@ -254,7 +254,7 @@
 
 ```bash
 cd ~/zenn5th_shogi && . .venv/bin/activate
-python -m pytest -q                                  # 57件通ること
+python -m pytest -q                                  # 59件通ること
 export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:-zenn5thshogi}"   # 無いとAIエージェントが出ない（下の注意）
 streamlit run app.py --server.port=8080 --server.enableCORS=false --server.enableXsrfProtection=false
 ```

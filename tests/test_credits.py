@@ -16,3 +16,8 @@ def test_commit_matches_dockerfiles():
     root = Path(__file__).resolve().parent.parent
     for f in ("Dockerfile", "engine_service/Dockerfile"):
         assert "YANEURAOU_COMMIT=" + credits.YANEURAOU_COMMIT in (root / f).read_text()
+
+
+def test_sidebar_has_github_and_wiki():
+    text = credits.sidebar_markdown()
+    assert credits.YANEURAOU_GITHUB in text and credits.YANEURAOU_WIKI in text
