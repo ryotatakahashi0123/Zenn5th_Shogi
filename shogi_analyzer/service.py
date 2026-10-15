@@ -16,7 +16,7 @@ from .kifu_analysis import Kifu, MAX_PLIES, analyze_kifu, validate_kifu, winrate
 
 DEEP_MS = 2000       # 深掘りの思考時間
 DEEP_MULTIPV = 3     # 深掘りで出す候補手の数
-LINE_PLIES = 12      # 画面・ノート・AIコーチに出す読み筋の長さ（発案者の指示 2026-10-14: その先の展開まで出す）
+LINE_PLIES = 12      # 画面・ノート・AIエージェントに出す読み筋の長さ（発案者の指示 2026-10-14: その先の展開まで出す）
 EXTEND_MS = 400      # 読み筋を伸ばすときの1回の思考時間
 EXTEND_CALLS = 3     # 読み筋を伸ばすために読み直す回数の上限（1つの読み筋あたり）
 PROMOTED_FILL = "#d0021b"  # 成り駒の色（発案者の指示 2026-10-14。成ったことがひと目で分かるように）

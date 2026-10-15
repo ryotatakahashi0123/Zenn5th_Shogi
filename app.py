@@ -3,11 +3,11 @@
 ログイン（利用者名とパスワード）→
 0. 初期画面（これまでの記録）の「棋譜を入力する」→ 棋譜入力モード: ファイルを読み込むか、テキストを貼り付けるか、盤面で1手ずつ指して入力する。保存は本人が同意したときだけ。ふりかえりの途中でも行き来できる
    棋譜を読み込んだ時点で、エンジンの解析を裏で始める（結果は印の入力が終わるまで見せない）。
-   解析と印の入力が終わると、AIコーチのふりかえりも自動で始める。印を付けずに、すぐ解析結果を見ることもできる
+   解析と印の入力が終わると、AIエージェントのふりかえりも自動で始める。印を付けずに、すぐ解析結果を見ることもできる
 1. 棋譜を読み込む → 自分の手番を確かめ、局面図を見ながら手に印を付ける（解析結果はまだ見せない）。
    自分の手: 悪手だと思った / ほかにも指す手があった / 好手だと思った。相手の手: 悪手だと思った / 予想外で驚いた / 好手だと思った
 2. 入力を完了 → 将棋エンジンで全手を解析し、6つのラベルごとの局面と読み筋・形勢グラフ・悪手候補を表示
-3. 「AIコーチにふりかえってもらう」→ ADK エージェント（Gemini）が自分で局面を選んで深掘りし、講評を書く
+3. 「AIエージェントにふりかえってもらう」→ ADK エージェント（Gemini）が自分で局面を選んで深掘りし、講評を書く
 4. 対局について質問 → エージェントが必要に応じてエンジンで確かめてから答える
 
     streamlit run app.py
@@ -41,10 +41,10 @@ from shogi_coach.engine_client import get_client
 MAX_UPLOAD = 200_000  # bytes
 # 棋譜入力の将棋盤（cshogi の図を表示し、押されたマスを返す画面部品）
 board_input = components.declare_component("board_input", path=str(Path(__file__).parent / "assets" / "board_input"))
-# AIコーチの講評（「N手目」を押すと局面図をその手にする画面部品）
+# AIエージェントの講評（「N手目」を押すと局面図をその手にする画面部品）
 coach_text = components.declare_component("coach_text", path=str(Path(__file__).parent / "assets" / "coach_text"))
 OK_EXT = (".kif", ".kifu", ".csa", ".txt")
-COACH_ERROR = "AIコーチの応答に失敗しました"
+COACH_ERROR = "AIエージェントの応答に失敗しました"
 REVIEW = "この対局をふりかえってください。"
 MARK_WAIT = 2 * 60 * 60  # 裏の処理が、印の入力の完了を待つ長さ（秒）
 AI_READY = bool(os.environ.get("GOOGLE_CLOUD_PROJECT")) or os.environ.get("COACH_ENABLED") == "1"
@@ -60,7 +60,7 @@ TOOL_LABEL = {
 st.set_page_config(page_title="ふりかえり将棋", page_icon="☗", layout="wide")
 st.title("ふりかえり将棋")
 st.caption("棋譜を読み込み、答えを見る前に、まず自分の感覚で手に印を付けます。そのあと将棋エンジンの判定とのずれを見せ、"
-           "AIコーチが勝負の分かれ目をふりかえります。")
+           "AIエージェントが勝負の分かれ目をふりかえります。")
 
 JST = timezone(timedelta(hours=9))
 
@@ -182,7 +182,7 @@ with st.sidebar:
                                     on_change=request_side, args=("side",))]
     ms = int(st.number_input("1手あたりの思考時間（ミリ秒）", 0, 3000, step=100, key="ms",
                              help="0 にするとエンジンで解析せず、印とコメントだけを記録します。解析するときは 100〜3000。"
-                                  "解析のあとで変えると、解析をやり直します（AIコーチとのやり取りも消えます）。"))
+                                  "解析のあとで変えると、解析をやり直します（AIエージェントとのやり取りも消えます）。"))
     if 0 < ms < 100:
         ms = 100
         st.caption("解析するときの思考時間は100ミリ秒以上です。100として扱います。")
@@ -276,7 +276,7 @@ def save_game(user_, src_, ms_, my_side_, rows_, marks_, chat_, actions_, reveal
 
 
 def start_pipe(kifu_, key_, ms_, src_, user_, marks_, my_side_, alt_cache_, ext_cache_):
-    """棋譜を読み込んだら、裏で 解析 →（印の入力を待つ）→ AIコーチのふりかえり → 保存 まで進める。
+    """棋譜を読み込んだら、裏で 解析 →（印の入力を待つ）→ AIエージェントのふりかえり → 保存 まで進める。
 
     画面の操作を待たずに進み、別の画面に移っても止まらない。画面の部品には触らない（結果は pipe に置き、画面が取りに来る）。
     marks_ が None のあいだは印の入力中で、解析結果は画面に出さない。
@@ -308,7 +308,7 @@ def start_pipe(kifu_, key_, ms_, src_, user_, marks_, my_side_, alt_cache_, ext_
             time.sleep(0.5)
         try:
             rows_, chat_, actions_ = pipe["rows"], [], []
-            if rows_ and alts.lines_of(pipe["marks"]):  # 迷った別の読みを先に評価する（AIコーチにも渡すため）
+            if rows_ and alts.lines_of(pipe["marks"]):  # 迷った別の読みを先に評価する（AIエージェントにも渡すため）
                 alt_cache_["busy"] = True
                 try:
                     alts.evaluate(get_client(), kifu_, pipe["marks"], ms_, alt_cache_["rows"], lambda: pipe["cancel"])
@@ -317,7 +317,7 @@ def start_pipe(kifu_, key_, ms_, src_, user_, marks_, my_side_, alt_cache_, ext_
             gap_ = regret.compare(rows_, pipe["marks"], pipe["my_side"],
                                   alts.summaries(kifu_, pipe["marks"], rows_, alt_cache_["rows"]))
             if pipe["coach"] and not pipe["cancel"]:
-                job = {"prompt": REVIEW, "label": "AIコーチが局面を選んで調べています…", "tools": [], "answer": None,
+                job = {"prompt": REVIEW, "label": "AIエージェントが局面を選んで調べています…", "tools": [], "answer": None,
                        "done": False}
                 pipe["job"] = job
                 try:
@@ -340,7 +340,7 @@ def start_pipe(kifu_, key_, ms_, src_, user_, marks_, my_side_, alt_cache_, ext_
 
 
 def open_game(game_id):
-    """保存した対局を開き直す（解析はやり直さず、保存した結果・印・AIコーチとのやり取りを戻す）。"""
+    """保存した対局を開き直す（解析はやり直さず、保存した結果・印・AIエージェントとのやり取りを戻す）。"""
     ss = st.session_state
     try:
         g = storage.load_game(user, game_id)
@@ -378,7 +378,7 @@ def open_game(game_id):
 
 
 def save_result():
-    """同意があるとき、この対局の集計・解析結果・印・AIコーチとのやり取りを保存する（あとから開き直せるように）。"""
+    """同意があるとき、この対局の集計・解析結果・印・AIエージェントとのやり取りを保存する（あとから開き直せるように）。"""
     save_game(user, src, ms, my_side, rows, list(marks.values()), st.session_state["chat"], st.session_state["actions"],
               alt_rows_=alt_cache["rows"], ext_=ext_cache["rows"])
 
@@ -408,7 +408,7 @@ def resume_button(src):
 def confirm_delete():
     h = st.session_state["delete"]
     st.write(f'{h.get("created", "")}　{h.get("label", "")}　{h.get("plies", "?")}手')
-    st.write("この対局の棋譜・解析結果・印・AIコーチとのやり取りを、保存先から削除します。元に戻せません。削除しますか？")
+    st.write("この対局の棋譜・解析結果・印・AIエージェントとのやり取りを、保存先から削除します。元に戻せません。削除しますか？")
     b1, b2 = st.columns(2)
     if b1.button("削除する", type="primary", use_container_width=True):
         try:
@@ -462,7 +462,7 @@ def home():
     if st.session_state.get("delete"):
         confirm_delete()
     if games:
-        st.caption("開くと、保存した解析結果・印・AIコーチとのやり取りをそのまま表示します（解析はやり直しません）。"
+        st.caption("開くと、保存した解析結果・印・AIエージェントとのやり取りをそのまま表示します（解析はやり直しません）。"
                    "ふりかえりノートのPDFも、そこからダウンロードできます。"
                    + ("保存から30日たった対局は自動的に削除されます。" if storage.BUCKET else ""))
     st.markdown("#### これまでの記録")
@@ -488,7 +488,7 @@ def home():
         st.dataframe(pd.DataFrame([{"段階": p, "悪手候補": n} for p, n in agg["bad_by_phase"].items()]), hide_index=True,
                      use_container_width=True)
     st.caption("保存に同意した対局だけを、決まった規則で数えています（AIの判断ではありません）。段階は、その対局の手数を3等分した"
-               "序盤・中盤・終盤です。AIコーチは、この記録を見てふりかえりを書きます。"
+               "序盤・中盤・終盤です。AIエージェントは、この記録を見てふりかえりを書きます。"
                + ("保存から30日たった対局は、記録からも消えます。" if storage.BUCKET else ""))
     trend_section()
 
@@ -642,7 +642,7 @@ def confirm_save():
             st.session_state["no_save_ok"] = True
             go(False)
         st.caption("保存しない場合、棋譜と結果は保存先に書き込みません。解析のあいだだけ処理用のメモリで扱い、ログアウトするか画面を閉じると消えます。"
-                   "AIコーチには、指し手とエンジンの数値を送ります（対局者名は送りません）。")
+                   "AIエージェントには、指し手とエンジンの数値を送ります（対局者名は送りません）。")
 
 
 def load_prefs() -> dict:
@@ -695,7 +695,7 @@ def kifu_zone():
         st.checkbox("次回からも確認せずに保存する（このチェックを入れたままにする）", value=bool(prefs.get("always_save")),
                     key="always_box", on_change=keep_always,
                     help="入れておくと、次にログインしたときも、上の同意のチェックが最初から入ります。外せば元に戻ります。")
-        st.caption("同意した場合だけ、棋譜（対局者名を含みます）、付けた印とコメント、解析結果、AIコーチとのやり取りを保存します。"
+        st.caption("同意した場合だけ、棋譜（対局者名を含みます）、付けた印とコメント、解析結果、AIエージェントとのやり取りを保存します。"
                    "保存した対局は「保存した対局」からいつでも開き直せ、「これまでの記録」にも数えられます。"
                    + ("保存したものは30日で自動的に削除されます。" if storage.BUCKET else
                       f"保存先はこのコンピューターの {storage.where()} フォルダーで、自動では削除されません。")
@@ -704,7 +704,7 @@ def kifu_zone():
         start = b1.button("この棋譜でふりかえりを始める", type="primary", use_container_width=True,
                           help="まず自分の感覚で手に印を付けます。解析は裏で先に進めておきます。")
         quick = b2.button("印を付けずに、すぐ解析結果を見る", use_container_width=True,
-                          help="棋譜だけで解析します。解析とAIコーチのふりかえりが自動で進みます。")
+                          help="棋譜だけで解析します。解析とAIエージェントのふりかえりが自動で進みます。")
         later = b3.button("いったん閉じて、あとで印を付ける", use_container_width=True,
                           help="棋譜を保存して最初の画面に戻ります。解析は裏で進み、結果も保存されます。"
                                "あとで「保存した対局」の「続ける」から、手に印を付けられます。")
@@ -798,7 +798,7 @@ def close_later():
 
 @st.dialog("ふりかえりをやり直す", dismissible=False)
 def confirm_redo():
-    st.write("印の入力からやり直します。エンジンの解析結果は残しますが、AIコーチとのやり取りは消えます。"
+    st.write("印の入力からやり直します。エンジンの解析結果は残しますが、AIエージェントとのやり取りは消えます。"
              "すでに解析結果を見ているので、この対局には「解析結果を見たあとで印を付け直した」と記録します。")
 
     def redo(keep):
@@ -1094,13 +1094,13 @@ if not st.session_state["revealed"]:
                 st.session_state["confirm"] = {"how": "close"}
             st.rerun()
         st.caption("完了すると、6つのラベルごとに、エンジンの解析結果（悪手候補と好手候補、その後の読み筋）とあなたの印を並べて表示し、"
-                   "AIコーチのふりかえりも自動で始めます。"
+                   "AIエージェントのふりかえりも自動で始めます。"
                    + ("" if marks else "印が無いまま進むこともできます。"))
     st.stop()
 
 # ---- 2. エンジン解析の結果を受け取る（解析は裏で進めてある。印の入力が終わったので、ここから結果を見せる） ----
 if st.session_state.get("key") != key:
-    if pipe["marks"] is None:  # 印の入力が終わったことを、裏の処理に知らせる（AIコーチのふりかえりが始まる）
+    if pipe["marks"] is None:  # 印の入力が終わったことを、裏の処理に知らせる（AIエージェントのふりかえりが始まる）
         pipe["my_side"] = my_side
         pipe["marks"] = list(marks.values())
     if pipe["error"]:
@@ -1212,7 +1212,7 @@ past = learn.aggregate([h for h in history() if h.get("game_id") != src["id"]]) 
 
 
 def finish(job):
-    """裏で動かしたAIコーチへの依頼の結果を、やり取りに加える。"""
+    """裏で動かしたAIエージェントへの依頼の結果を、やり取りに加える。"""
     st.session_state["chat"] += [("user", job["prompt"]), ("assistant", job["answer"])]
     st.session_state["actions"] += job["tools"]
     st.session_state["job"] = None
@@ -1223,7 +1223,7 @@ def finish(job):
             src["save_error"] = str(e)
 
 
-# 裏の処理が始めたAIコーチのふりかえりを、この画面の依頼として受け取る
+# 裏の処理が始めたAIエージェントのふりかえりを、この画面の依頼として受け取る
 if pipe and pipe["key"] == key and pipe["job"] and not pipe["taken"]:
     pipe["taken"] = True
     st.session_state["job"] = pipe["job"]
@@ -1282,8 +1282,8 @@ def line_dialog():
                "読み筋の続きをエンジンで読んでいる途中なら、閉じて開き直すと伸びていることがあります。")
 
 
-# PC では、上段の左に形勢グラフと局面図、右にAIコーチを並べ、表はその下に全幅で置く（発案者の指示 2026-10-14。空白を作らない）。
-# スマホの幅では Streamlit が横並びを縦に積むので、局面図 → AIコーチ → 表 の順になる
+# PC では、上段の左に形勢グラフと局面図、右にAIエージェントを並べ、表はその下に全幅で置く（発案者の指示 2026-10-14。空白を作らない）。
+# スマホの幅では Streamlit が横並びを縦に積むので、局面図 → AIエージェント → 表 の順になる
 if st.session_state.get("coach_pick") is not None:  # 講評の「N手目」が押された（手を選ぶ欄を描く前に移す）
     st.session_state["mark_ply"] = st.session_state.pop("coach_pick")
 top_l, right = st.columns([3, 2], gap="large")
@@ -1385,7 +1385,7 @@ with bottom:
                         key="wr_chart", on_select=pick_point)
 
         st.markdown("#### 局面図")
-        st.caption("形勢グラフ、AIコーチの講評の「N手目」、または下の表（ラベルごとのふりかえり・悪手候補）の行を押すと、"
+        st.caption("形勢グラフ、AIエージェントの講評の「N手目」、または下の表（ラベルごとのふりかえり・悪手候補）の行を押すと、"
                    "その手の局面を表示します。グラフの縦線が表示中の手です。")
         shown = board_view()
         r = next((r for r in rows if r["ply"] == shown), None)
@@ -1446,17 +1446,17 @@ with bottom:
     with n2:
         st.html(report.print_link(st.session_state["note"][2]), unsafe_allow_javascript=True)
     st.caption("6つのラベルごとの表と局面図、形勢グラフをA4にまとめます。エンジンの最善手とその後の読み筋は、後ろのページに図つきの回答として載せます。「印刷用ページを開く」は新しいタブで開きます。"
-               + ("AIコーチのふりかえりも入っています。" if review else "AIコーチにふりかえってもらうと、その文章も入ります。")
-               + (f"AIコーチへの質問と回答（{len(qa)}件）は末尾に入っています。" if qa else "AIコーチへの質問と回答は、末尾に入ります。"))
+               + ("AIエージェントのふりかえりも入っています。" if review else "AIエージェントにふりかえってもらうと、その文章も入ります。")
+               + (f"AIエージェントへの質問と回答（{len(qa)}件）は末尾に入っています。" if qa else "AIエージェントへの質問と回答は、末尾に入ります。"))
 
 if st.session_state.get("line_pop"):
     line_dialog()
 
-# ---- 3. AIコーチ ----
+# ---- 3. AIエージェント ----
 with right:
-    st.markdown("#### AIコーチのふりかえり")
+    st.markdown("#### AIエージェントのふりかえり")
     if not AI_READY:
-        st.info("AIコーチは、環境変数 GOOGLE_CLOUD_PROJECT（Google Cloud のプロジェクトID）が無いと使えません。"
+        st.info("AIエージェントは、環境変数 GOOGLE_CLOUD_PROJECT（Google Cloud のプロジェクトID）が無いと使えません。"
                 "設定してからアプリを起動し直してください。エンジンの解析結果は、このまま使えます。")
         st.stop()
 
@@ -1467,7 +1467,7 @@ with right:
     coach: CoachSession = st.session_state["coach"]
 
     def ask(prompt: str, label: str):
-        """AIコーチへの依頼を裏で動かす。待っているあいだに別の操作をしても、やり取りが消えないようにする。"""
+        """AIエージェントへの依頼を裏で動かす。待っているあいだに別の操作をしても、やり取りが消えないようにする。"""
         job = {"prompt": prompt, "label": label, "tools": [], "answer": None, "done": False, "key": key}
 
         def work(coach=coach, gap=gap, past=past):
@@ -1484,11 +1484,11 @@ with right:
     job = st.session_state.get("job")
 
     if not st.session_state["chat"] and not job and not auto_pending and st.session_state.pop("auto_review", False):
-        ask(REVIEW, "AIコーチが局面を選んで調べています…")  # 保存した対局の続きで印を付け終えたとき
+        ask(REVIEW, "AIエージェントが局面を選んで調べています…")  # 保存した対局の続きで印を付け終えたとき
         st.rerun()
     if not st.session_state["chat"] and not job and not auto_pending:  # 自動のふりかえりが無いとき（保存した対局を開いた、など）
-        if st.button("AIコーチにふりかえってもらう", type="primary", use_container_width=True):
-            ask(REVIEW, "AIコーチが局面を選んで調べています…")
+        if st.button("AIエージェントにふりかえってもらう", type="primary", use_container_width=True):
+            ask(REVIEW, "AIエージェントが局面を選んで調べています…")
             st.rerun()
 
     if st.session_state["chat"]:
@@ -1509,7 +1509,7 @@ with right:
             if auto_pending:
                 if pipe["job"] or pipe["done"]:
                     st.rerun()
-                st.caption("AIコーチのふりかえりを自動で始めます…")
+                st.caption("AIエージェントのふりかえりを自動で始めます…")
             return
         if j["done"]:
             st.rerun()
@@ -1523,7 +1523,7 @@ with right:
     waiting()
 
     if st.session_state["chat"] and not job:
-        if st.button("AIコーチのふりかえりをやり直す", help="いまの講評と質問・回答を消して、AIコーチにもう一度ふりかえってもらいます。"):
+        if st.button("AIエージェントのふりかえりをやり直す", help="いまの講評と質問・回答を消して、AIエージェントにもう一度ふりかえってもらいます。"):
             st.session_state.update(chat=[], actions=[], coach=None, note=None, auto_review=True)
             st.rerun()
     if st.session_state["chat"]:

@@ -36,7 +36,7 @@ GOOD_NOTE = ("一致は、好手だと思った手がエンジンの最善手と
              "取り返すしかない局面の当然の手も入ります。エンジンによる参考値です。")
 RULE_NOTE = ("区分は決まった規則で分けています（AIの判断ではありません）。勝率の下落は指した側から見た値で、"
              "エンジン（やねうら王 + 水匠5）による参考値です。")
-QA_NOTE = "AIコーチへの質問と、AI（Gemini）の回答です。回答はエンジンで確かめた結果をもとにしていますが、AIが書いた文章です。"
+QA_NOTE = "AIエージェントへの質問と、AI（Gemini）の回答です。回答はエンジンで確かめた結果をもとにしていますが、AIが書いた文章です。"
 COACH_NOTE = "ここから下はAI（Gemini）が書いた文章です。上の表と図（エンジンの解析結果）とは分けて読んでください。"
 BOARD_NOTE = ("図は、その手を指す直前の局面です（色の付いたマスは直前の手）。"
               "エンジンの最善手は、後ろの「回答」のページにあります。")
@@ -53,9 +53,9 @@ MEMO = "気づいたこと・次に直すこと"
 
 def collect(kifu: Kifu, rows: list[dict], gap: dict, title: str = "", coach_text: str = "",
             created: str = "", qa: list[tuple[str, str]] = (), ext: dict | None = None) -> dict:
-    """rows: 全手解析の行。gap: regret.compare の結果。coach_text: AIコーチの講評（Markdown。無ければ空）。
+    """rows: 全手解析の行。gap: regret.compare の結果。coach_text: AIエージェントの講評（Markdown。無ければ空）。
 
-    qa: AIコーチへの（質問, 回答）の並び。ノートの末尾に載せる。
+    qa: AIエージェントへの（質問, 回答）の並び。ノートの末尾に載せる。
     sections は6つのラベル（regret.SECTIONS の順）。各ラベルの rows が表、cards が局面図つきの欄（印を付けた手と自分の悪手候補）。
     """
     by_ply = {r["ply"]: r for r in rows}
@@ -304,11 +304,11 @@ def to_html(d: dict, kifu: Kifu) -> str:
             o.append("</tbody></table>")
         o.append(f"<p class='note'>{GOOD_NOTE}</p>")
     if d["coach"]:
-        o.append(f"<h2>AIコーチの所感</h2><p class='note'>{COACH_NOTE}</p>")
+        o.append(f"<h2>AIエージェントの所感</h2><p class='note'>{COACH_NOTE}</p>")
         for kind, text in d["coach"]:
             o.append({"h": "<h3>{}</h3>", "li": "<ul><li>{}</li></ul>", "p": "<p>{}</p>"}[kind].format(inline(text)))
     if d.get("qa"):
-        o.append(f"<h2>AIコーチへの質問と回答</h2><p class='note'>{QA_NOTE}</p>")
+        o.append(f"<h2>AIエージェントへの質問と回答</h2><p class='note'>{QA_NOTE}</p>")
         for q, blocks in d["qa"]:
             o.append(f"<h3>質問: {esc(q)}</h3>")
             for kind, text in blocks:  # 回答の中の見出しは、質問より目立たないよう太字の行にする
@@ -585,9 +585,9 @@ def to_pdf(d: dict, kifu: Kifu) -> bytes:
     if d["coach"]:
         paras = [Paragraph("・" + inline(_safe(text)) if kind == "li" else inline(_safe(text)),
                            {"h": h3, "li": bullet, "p": body}[kind]) for kind, text in d["coach"]]
-        s += [KeepTogether([*section("AIコーチの所感"), P(COACH_NOTE, small), Spacer(1, 4), *paras[:2]]), *paras[2:]]
+        s += [KeepTogether([*section("AIエージェントの所感"), P(COACH_NOTE, small), Spacer(1, 4), *paras[:2]]), *paras[2:]]
     if d.get("qa"):
-        lead = [*section("AIコーチへの質問と回答"), P(QA_NOTE, small), Spacer(1, 4)]
+        lead = [*section("AIエージェントへの質問と回答"), P(QA_NOTE, small), Spacer(1, 4)]
         for q, blocks in d["qa"]:
             paras = [Paragraph("・" + inline(_safe(text)) if kind == "li" else
                                f"<b>{inline(_safe(text))}</b>" if kind == "h" else inline(_safe(text)),
