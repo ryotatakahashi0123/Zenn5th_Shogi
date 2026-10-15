@@ -431,7 +431,10 @@ class BoardDiagram(Flowable):
                 cv.rotate(180)
             if p % 16 >= 9:  # 成り駒は赤（白黒で印刷すると灰色になる）
                 cv.setFillColor(colors.HexColor(PROMOTED_FILL))
-            cv.drawCentredString(0, -fs * 0.36, cshogi.PIECE_JAPANESE_SYMBOLS[p % 16])
+            glyph = cshogi.PIECE_JAPANESE_SYMBOLS[p % 16]
+            if p % 16 == 8:  # 玉: 先手は「王」、後手は「玉」（発案者の指示 2026-10-15）
+                glyph = "王" if p < 16 else "玉"
+            cv.drawCentredString(0, -fs * 0.36, glyph)
             cv.restoreState()
         cv.setFont(FONT, c * 0.5)
         cv.drawString(0, top + c * 0.95, "☖後手の持駒　" + self._hand(self.hands[1]))
