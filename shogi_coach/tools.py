@@ -188,7 +188,9 @@ def past_tendencies(tool_context: ToolContext) -> dict:
         counts: 6つのラベルの印とエンジン判定の区分ごとの合計（regret_gap の groups と同じ区分名）。
         tags: 「悪手だと思った」自分の手で本人が選んだ原因と、その回数（多い順）。
         bad_moves: 本人の悪手候補の合計。bad_by_phase は対局の手数を3等分した序盤・中盤・終盤ごと、bad_by_label は判定ごとの数。
-        bad_noticed: 本人の悪手候補のうち、本人が「悪手だと思った」印を付けていた数。
+        my_moves / moves_by_phase: 本人が指した手の数（合計 / 段階ごと）。bad_rate / bad_rate_by_phase: 本人が指した手のうち
+        悪手候補だった割合（0〜1。分母が 0 なら null）。段階の傾向は、回数ではなくこの割合で比べる。
+        bad_noticed: 本人の悪手候補のうち、本人が「悪手だと思った」印を付けていた数（noticed_rate はその割合）。
         good_moves: 本人の好手候補の合計。
         regret_by_phase: 「悪手だと思った」自分の手の印を付けた段階ごとの数。surprise: 予想外で驚いた相手の手の数（total）と、そのうち
         エンジンの最善手と同じだった数（best）・相手の悪手候補だった数（bad）。alts: 迷った別の読みが実戦の手と比べて

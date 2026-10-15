@@ -20,7 +20,7 @@ import re
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from pathlib import Path
 
@@ -30,7 +30,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from shogi_analyzer import alts, coach_view, entry, learn, regret, report
+from shogi_analyzer import alts, coach_view, credits, entry, learn, regret, report
 from shogi_analyzer.kifu_analysis import GOOD_GAP, detect_format, load_kifu
 from shogi_analyzer.service import (board_svg, ext_key, extend_rows, line_positions, lines_jp, move_list, position_svg,
                                     sfen_svg)
@@ -65,9 +65,28 @@ st.caption("棋譜を読み込み、答えを見る前に、まず自分の感�
 JST = timezone(timedelta(hours=9))
 
 
+def pct(x) -> str:
+    """割合（0〜1）を「12%」の形にする。分母が無い（None）ときは「—」。"""
+    return "—" if x is None else f"{x * 100:.0f}%"
+
+
+def footer():
+    """どの画面の最後にも出すフッター（使っている将棋エンジン・評価関数のクレジット）。"""
+    st.divider()
+    st.caption(credits.footer_markdown())
+
+
+def stop():
+    """フッターを出してから、この回の描画を終える（st.stop() のかわりに使う）。"""
+    footer()
+    st.stop()
+
+
 # ---- ログインと利用者の登録（利用者名とパスワード。管理者は tools/add_user.py でも追加できる） ----
 def login_page():
     st.markdown("#### ログイン")
+    if st.session_state.pop("reset_done", False):
+        st.success("パスワードを初期化しました。新しいパスワードでログインしてください。")
     with st.form("login"):
         name = st.text_input("利用者名")
         password = st.text_input("パスワード", type="password")
@@ -84,7 +103,13 @@ def login_page():
                 st.session_state["user"] = name.strip().lower()
                 st.rerun()
             st.error("利用者名かパスワードが違います")
-    st.button("新しい利用者を登録する", on_click=lambda: st.session_state.update(auth_page="signup"))
+    c1, c2 = st.columns(2)
+    c1.button("新しい利用者を登録する", on_click=lambda: st.session_state.update(auth_page="signup"), use_container_width=True)
+    c2.button("パスワードを忘れた場合", on_click=lambda: st.session_state.update(auth_page="reset"), use_container_width=True)
+
+
+def birth_input(label="生年月日"):
+    return st.date_input(label, value=None, min_value=date(1900, 1, 1), max_value=date.today(), format="YYYY/MM/DD")
 
 
 def signup_page():
@@ -94,18 +119,44 @@ def signup_page():
         name = st.text_input("利用者名", help="半角の英小文字・数字・_ の2〜20文字")
         password = st.text_input("パスワード", type="password", help=f"{auth.MIN_SIGNUP_PASSWORD}文字以上")
         confirm = st.text_input("パスワード（確認）", type="password")
+        birth = birth_input("生年月日（パスワードを忘れたときの確認に使います）")
         code = st.text_input("登録の合言葉", type="password") if auth.SIGNUP_CODE else ""
         go = st.form_submit_button("登録する", type="primary")
-    st.caption("パスワードそのものは保存しません（照合用のハッシュだけを保存します）。パスワードを忘れたときに、画面から再設定する機能はありません。")
+    st.caption("パスワードと生年月日そのものは保存しません（照合用のハッシュだけを保存します）。"
+               "パスワードを忘れたときは、ログイン画面の「パスワードを忘れた場合」から、利用者名と生年月日で新しいパスワードに初期化できます。")
     if go:
         try:
-            st.session_state["user"] = auth.register(name, password, confirm, code)
+            st.session_state["user"] = auth.register(name, password, confirm, code, birth)
         except ValueError as e:
             st.error(str(e))
         except Exception as e:
             st.error(f"登録に失敗しました: {e}")
         else:
             st.rerun()  # 登録できたら、そのままログインした状態にする
+
+
+def reset_page():
+    st.markdown("#### パスワードの初期化")
+    st.button("◀ ログインに戻る", on_click=lambda: st.session_state.update(auth_page="login"))
+    with st.form("reset"):
+        name = st.text_input("利用者名")
+        birth = birth_input()
+        password = st.text_input("新しいパスワード", type="password", help=f"{auth.MIN_SIGNUP_PASSWORD}文字以上")
+        confirm = st.text_input("新しいパスワード（確認）", type="password")
+        go = st.form_submit_button("パスワードを初期化する", type="primary")
+    st.caption("利用者名と、登録したときの生年月日が一致すれば、パスワードを新しいものに変えます。"
+               "生年月日の登録が始まる前（2026-10-15 より前）に登録した利用者は、ここでは初期化できません。")
+    if go:
+        try:
+            auth.reset_password(name, birth, password, confirm)
+        except ValueError as e:
+            st.error(str(e))
+        except Exception as e:
+            st.error(f"初期化に失敗しました: {e}")
+        else:
+            st.session_state["auth_page"] = "login"
+            st.session_state["reset_done"] = True
+            st.rerun()
 
 
 def logout():
@@ -115,9 +166,11 @@ def logout():
 if not st.session_state.get("user"):
     if st.session_state.get("auth_page") == "signup":  # 式のまま書くと、Streamlit が戻り値（None）を画面に出す
         signup_page()
+    elif st.session_state.get("auth_page") == "reset":
+        reset_page()
     else:
         login_page()
-    st.stop()
+    stop()
 user = st.session_state["user"]
 
 
@@ -480,8 +533,11 @@ def home():
         return
     m = st.columns(4)
     m[0].metric("保存した対局", f'{agg["games"]}局')
-    m[1].metric("自分の悪手候補", agg["bad_moves"], help="エンジンの判定で、自分の悪手・疑問手・緩手だった手の合計")
-    m[2].metric("うち、自分で気づけた数", agg["bad_noticed"], help="悪手候補のうち、解析を見る前に「悪手だと思った」印を付けていた数")
+    m[1].metric("自分の悪手候補の割合", pct(agg["bad_rate"]),
+                help=f'自分が指した手（{agg["my_moves"]}手）のうち、エンジンの判定で悪手・疑問手・緩手だった手（{agg["bad_moves"]}手）の割合。'
+                     "100%なら全部の手、0%なら悪手候補が1つも無い")
+    m[2].metric("うち、自分で気づけた割合", pct(agg["noticed_rate"]),
+                help=f'悪手候補（{agg["bad_moves"]}手）のうち、解析を見る前に「悪手だと思った」印を付けていた手（{agg["bad_noticed"]}手）の割合')
     m[3].metric("自分の好手候補", agg["good_moves"])
     t1, t2 = st.columns(2)
     with t1:
@@ -492,9 +548,11 @@ def home():
         else:
             st.caption("まだありません。")
     with t2:
-        st.markdown("**悪手候補が出た段階**")
-        st.dataframe(pd.DataFrame([{"段階": p, "悪手候補": n} for p, n in agg["bad_by_phase"].items()]), hide_index=True,
-                     use_container_width=True)
+        st.markdown("**悪手候補が出た段階**（自分が指した手のうち、悪手候補だった割合）")
+        # 並べ替えられない表にして、序盤・中盤・終盤の順に固定する（発案者の指示 2026-10-15）
+        st.table(pd.DataFrame([{"段階": p, "悪手候補の割合": pct(agg["bad_rate_by_phase"][p]),
+                                "悪手候補 / 指した手": f'{agg["bad_by_phase"][p]} / {agg["moves_by_phase"][p]}手'}
+                               for p in learn.PHASES]).set_index("段階"))
     st.caption("保存に同意した対局だけを、決まった規則で数えています（AIの判断ではありません）。段階は、その対局の手数を3等分した"
                "序盤・中盤・終盤です。AIエージェントは、この記録を見てふりかえりを書きます。"
                + ("保存から30日たった対局は、記録からも消えます。" if storage.BUCKET else ""))
@@ -744,10 +802,10 @@ def kifu_zone():
 
 if st.session_state["mode"] == "home":
     home()
-    st.stop()
+    stop()
 if st.session_state["mode"] == "input" or not st.session_state["src"]:
     kifu_zone()
-    st.stop()
+    stop()
 
 src = st.session_state["src"]
 kifu = load_kifu(src["data"], src["name"])  # 入力ゾーンで読めることを確かめてある
@@ -1108,7 +1166,7 @@ if not st.session_state["revealed"]:
         st.caption("完了すると、6つのラベルごとに、エンジンの解析結果（悪手候補と好手候補、その後の読み筋）とあなたの印を並べて表示し、"
                    "AIエージェントのふりかえりも自動で始めます。"
                    + ("" if marks else "印が無いまま進むこともできます。"))
-    st.stop()
+    stop()
 
 # ---- 2. エンジン解析の結果を受け取る（解析は裏で進めてある。印の入力が終わったので、ここから結果を見せる） ----
 if st.session_state.get("key") != key:
@@ -1117,7 +1175,7 @@ if st.session_state.get("key") != key:
         pipe["marks"] = list(marks.values())
     if pipe["error"]:
         st.error(f"エンジンの解析に失敗しました: {pipe['error']}")
-        st.stop()
+        stop()
     if not pipe["analyzed"]:
         @st.fragment(run_every=1.0)
         def wait_engine():
@@ -1125,7 +1183,7 @@ if st.session_state.get("key") != key:
                 st.rerun()
             st.info("将棋エンジンで全手を解析しています…（裏で進めているので、別の画面に移っても止まりません）")
         wait_engine()
-        st.stop()
+        stop()
     st.session_state.update(key=key, rows=pipe["rows"], coach=pipe["coach"], chat=[], actions=[], saved=None, note=None,
                             job=None)
 rows = st.session_state["rows"]
@@ -1209,7 +1267,7 @@ if not rows:  # 思考時間 0。エンジンで解析せず、印とコメン�
             marks_table()
         else:
             st.caption("印はありません。")
-    st.stop()
+    stop()
 
 alt_done = len(alt_cache["rows"])  # 評価が増えたら保存し直す
 ext_done = len(ext_cache["rows"])  # 伸ばした読み筋が増えたら保存し直す（ノートも作り直す）
@@ -1470,7 +1528,7 @@ with right:
     if not AI_READY:
         st.info("AIエージェントは、環境変数 GOOGLE_CLOUD_PROJECT（Google Cloud のプロジェクトID）が無いと使えません。"
                 "設定してからアプリを起動し直してください。エンジンの解析結果は、このまま使えます。")
-        st.stop()
+        stop()
 
     from shogi_coach.session import CoachSession
 
@@ -1550,3 +1608,5 @@ if st.session_state.get("chat") or st.session_state.get("job"):
         with right:
             ask(q, "確認しています…")
         st.rerun()
+
+footer()

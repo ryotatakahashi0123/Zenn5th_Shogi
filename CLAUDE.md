@@ -41,7 +41,7 @@
 | パス | 内容 |
 |---|---|
 | `app.py` | Streamlit 画面。棋譜アップロード → 手番の確認と6つのラベルの印（局面図・手送り）→ 完了後に、ラベルごとのふりかえり（局面・読み筋）、形勢グラフ、悪手候補、ふりかえりノート（PDF・印刷用ページ）、AIエージェント |
-| `shogi_analyzer/` | 外部サービスに依存しない解析。`alts.py`（迷った別の読み）、`coach_view.py`（講評の「N手目」を押せる形にする）、`trend.py`（傾向まとめの規則と、AIの文の検証）、`kifu_analysis.py`（読み込み・全手解析・勝率変換）、`service.py`（深掘り・比較、画面用の指し手一覧と局面図）、`usi_engine.py`、`regret.py`（印とエンジン判定の突き合わせ。純粋関数）、`report.py`（ふりかえりノートのPDFと印刷用HTML。エンジンもLLMも呼ばない） |
+| `shogi_analyzer/` | 外部サービスに依存しない解析。`alts.py`（迷った別の読み）、`coach_view.py`（講評の「N手目」を押せる形にする）、`trend.py`（傾向まとめの規則と、AIの文の検証）、`kifu_analysis.py`（読み込み・全手解析・勝率変換）、`service.py`（深掘り・比較、画面用の指し手一覧と局面図）、`usi_engine.py`、`regret.py`（印とエンジン判定の突き合わせ。純粋関数）、`report.py`（ふりかえりノートのPDFと印刷用HTML。エンジンもLLMも呼ばない）、`credits.py`（やねうら王・水匠5のクレジット。画面のフッターに出す。`app.stop()` がフッターを出してから止める） |
 | `assets/fonts/` | PDFに埋め込む BIZ UDゴシック（SIL OFL 1.1）。`web.Dockerfile` でコピーする |
 | `shogi_coach/` | `agent.py`（指示文・ログ）、`trend.py`（傾向まとめを Gemini で書いて保存）、`tools.py`（エージェントの道具）、`session.py`、`engine_client.py`、`storage.py` |
 | `engine_service/` | shogi-engine（FastAPI）。本番では非公開で、web のサービスアカウントだけが呼べる |
@@ -66,7 +66,11 @@
   ログインの状態はブラウザのセッション内だけ（再読み込みでログインし直し）
 - **画面からの利用者登録**（発案者の指示 2026-10-13）: ログイン画面の「新しい利用者を登録する」→ 登録ページ（`auth.register`）。
   パスワード8文字以上、すでにある名前は上書きしない、上限 `MAX_USERS`（既定30）、`SIGNUP_CODE` を設定すると合言葉が要る（いまは未設定 = 誰でも登録できる）。
-  登録できた人はAIエージェントとエンジンを使えるので、費用が気になるときは `SIGNUP_CODE` を設定する。パスワードの再設定は管理者が `tools/add_user.py` で行う
+  登録できた人はAIエージェントとエンジンを使えるので、費用が気になるときは `SIGNUP_CODE` を設定する。
+- **パスワードを忘れた場合**（発案者の指示 2026-10-15）: 登録で生年月日を必須にし、塩付き scrypt のハッシュ（`users.json` の `birth`）だけを持つ。
+  ログイン画面の「パスワードを忘れた場合」→ `app.reset_page` → `auth.reset_password`。利用者名と生年月日が一致すれば新しいパスワード（8文字以上）にする。
+  一致しないときは利用者の有無が分からない同じ文。続けて5回間違えると5分止める（キー `reset:<名前>`。プロセス内だけ）。
+  生年月日は推測されやすい情報なので、パスワードほど強い確認ではない。生年月日の無い以前の利用者は管理者が `tools/add_user.py` で行う（生年月日は残す）
 - 最初の利用者は、手元（`data/auth/users.json`）と公開サービスのバケット（`auth/users.json`）の両方に登録済み
 - **保存先**（`shogi_coach/storage.py`）: `BUCKET` があれば Cloud Storage、無ければ `./data`（.gitignore 済み。自動では消えない）。
   `games/<利用者>/<対局ID>/` に棋譜・`summary.json`（数だけの集計）・`result.json`（解析の行、印、AIとのやり取り）。
@@ -80,6 +84,8 @@
   Cloud Storage への読み書きは、実際のバケットで確認済み
 - **これまでの記録**（`shogi_analyzer/learn.py`）: 保存した対局の `summary.json` を足し合わせる純粋関数。原因の回数、
   悪手候補の数と段階（対局の手数を3等分した序盤・中盤・終盤。**仮の区切り、発案者の確認待ち**）、「悪手だと思った」印を付けていた数。
+  **悪手候補は回数でなく割合で見せる**（発案者の指示 2026-10-15）: 自分が指した手（`moves_by_phase`。古い集計は手数の偶奇から数える）のうち
+  悪手候補だった割合（`bad_rate` / `bad_rate_by_phase`、気づけた割合 `noticed_rate`）。段階の表は `st.table` で序盤・中盤・終盤の順に固定。
   初期画面に出し、AIエージェントには `past_tendencies` で今回の対局を除いて渡す。**モデルの再学習ではない**（記録を読ませるだけ）。
   コメントの文は集計に入れない。30日で元の対局が消えると、記録からも消える
 - **AIエージェントへの依頼は別スレッドで動かす**（`app.ask` / `finish` / `waiting`）。以前は、待っているあいだに別の操作をすると
@@ -248,7 +254,7 @@
 
 ```bash
 cd ~/zenn5th_shogi && . .venv/bin/activate
-python -m pytest -q                                  # 52件通ること
+python -m pytest -q                                  # 57件通ること
 export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:-zenn5thshogi}"   # 無いとAIエージェントが出ない（下の注意）
 streamlit run app.py --server.port=8080 --server.enableCORS=false --server.enableXsrfProtection=false
 ```
