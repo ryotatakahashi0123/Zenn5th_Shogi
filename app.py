@@ -631,6 +631,12 @@ def kifu_zone():
                 st.caption("ファイルと貼り付けの欄は、画面を移ると空に戻ります。何も入れずに下のボタンを押すと、いまの棋譜を使います。")
         with z2:
             resign = entry_board()
+        # 自分の手番は、棋譜を入れるときに必ず選ぶ（自分の手か相手の手かで、付けられるラベルと突き合わせが変わるため。
+        # 発案者の指示 2026-10-15）。選んだ値はサイドバーの「自分の手番」と同じ side に入れる
+        side_in = st.radio("あなたは先手ですか、後手ですか？（必須）", list(regret.SIDES), index=None, horizontal=True,
+                           key="side_input", format_func=lambda k: f'{"☗" if k == "先手" else "☖"}{k}',
+                           on_change=lambda: st.session_state.update(side=st.session_state["side_input"]),
+                           help="自分の手か相手の手かで、付けられる印のラベルが変わります。印を付ける画面でも直せます。")
         prefs = st.session_state.setdefault("prefs", load_prefs())
         consent = st.checkbox("この棋譜を保存し、これまでの記録に加えることに同意する",
                               value=bool(prefs.get("always_save") or (src and src["consent"])))
@@ -652,7 +658,9 @@ def kifu_zone():
                                "あとで「保存した対局」の「続ける」から、手に印を付けられます。")
         if st.session_state.get("confirm"):
             confirm_save()
-        if resign or start or quick or later:
+        if (resign or start or quick or later) and side_in is None:
+            st.error("「あなたは先手ですか、後手ですか？」で、自分の手番を選んでください。")
+        elif resign or start or quick or later:
             played = st.session_state["entry"]
             if (up is not None or text.strip()) and played == st.session_state.get("entry_used"):
                 played = []  # 前の棋譜のときの盤面入力は、新しいファイルや貼り付けと重ねない
