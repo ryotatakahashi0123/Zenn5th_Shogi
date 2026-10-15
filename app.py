@@ -30,7 +30,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from shogi_analyzer import alts, coach_view, entry, learn, regret, report
+from shogi_analyzer import alts, coach_view, credits, entry, learn, regret, report
 from shogi_analyzer.kifu_analysis import GOOD_GAP, detect_format, load_kifu
 from shogi_analyzer.service import (board_svg, ext_key, extend_rows, line_positions, lines_jp, move_list, position_svg,
                                     sfen_svg)
@@ -63,6 +63,18 @@ st.caption("棋譜を読み込み、答えを見る前に、まず自分の感�
            "AIコーチが勝負の分かれ目をふりかえります。")
 
 JST = timezone(timedelta(hours=9))
+
+
+def footer():
+    """どの画面の最後にも出すフッター（使っている将棋エンジン・評価関数のクレジット）。"""
+    st.divider()
+    st.caption(credits.footer_markdown())
+
+
+def stop():
+    """フッターを出してから、この回の描画を終える（st.stop() のかわりに使う）。"""
+    footer()
+    st.stop()
 
 
 # ---- ログインと利用者の登録（利用者名とパスワード。管理者は tools/add_user.py でも追加できる） ----
@@ -117,7 +129,7 @@ if not st.session_state.get("user"):
         signup_page()
     else:
         login_page()
-    st.stop()
+    stop()
 user = st.session_state["user"]
 
 
@@ -736,10 +748,10 @@ def kifu_zone():
 
 if st.session_state["mode"] == "home":
     home()
-    st.stop()
+    stop()
 if st.session_state["mode"] == "input" or not st.session_state["src"]:
     kifu_zone()
-    st.stop()
+    stop()
 
 src = st.session_state["src"]
 kifu = load_kifu(src["data"], src["name"])  # 入力ゾーンで読めることを確かめてある
@@ -1096,7 +1108,7 @@ if not st.session_state["revealed"]:
         st.caption("完了すると、6つのラベルごとに、エンジンの解析結果（悪手候補と好手候補、その後の読み筋）とあなたの印を並べて表示し、"
                    "AIコーチのふりかえりも自動で始めます。"
                    + ("" if marks else "印が無いまま進むこともできます。"))
-    st.stop()
+    stop()
 
 # ---- 2. エンジン解析の結果を受け取る（解析は裏で進めてある。印の入力が終わったので、ここから結果を見せる） ----
 if st.session_state.get("key") != key:
@@ -1105,7 +1117,7 @@ if st.session_state.get("key") != key:
         pipe["marks"] = list(marks.values())
     if pipe["error"]:
         st.error(f"エンジンの解析に失敗しました: {pipe['error']}")
-        st.stop()
+        stop()
     if not pipe["analyzed"]:
         @st.fragment(run_every=1.0)
         def wait_engine():
@@ -1113,7 +1125,7 @@ if st.session_state.get("key") != key:
                 st.rerun()
             st.info("将棋エンジンで全手を解析しています…（裏で進めているので、別の画面に移っても止まりません）")
         wait_engine()
-        st.stop()
+        stop()
     st.session_state.update(key=key, rows=pipe["rows"], coach=pipe["coach"], chat=[], actions=[], saved=None, note=None,
                             job=None)
 rows = st.session_state["rows"]
@@ -1197,7 +1209,7 @@ if not rows:  # 思考時間 0。エンジンで解析せず、印とコメン�
             marks_table()
         else:
             st.caption("印はありません。")
-    st.stop()
+    stop()
 
 alt_done = len(alt_cache["rows"])  # 評価が増えたら保存し直す
 ext_done = len(ext_cache["rows"])  # 伸ばした読み筋が増えたら保存し直す（ノートも作り直す）
@@ -1458,7 +1470,7 @@ with right:
     if not AI_READY:
         st.info("AIコーチは、環境変数 GOOGLE_CLOUD_PROJECT（Google Cloud のプロジェクトID）が無いと使えません。"
                 "設定してからアプリを起動し直してください。エンジンの解析結果は、このまま使えます。")
-        st.stop()
+        stop()
 
     from shogi_coach.session import CoachSession
 
@@ -1538,3 +1550,5 @@ if st.session_state.get("chat") or st.session_state.get("job"):
         with right:
             ask(q, "確認しています…")
         st.rerun()
+
+footer()

@@ -37,7 +37,7 @@
 | パス | 内容 |
 |---|---|
 | `app.py` | Streamlit 画面。棋譜アップロード → 手番の確認と6つのラベルの印（局面図・手送り）→ 完了後に、ラベルごとのふりかえり（局面・読み筋）、形勢グラフ、悪手候補、ふりかえりノート（PDF・印刷用ページ）、AIコーチ |
-| `shogi_analyzer/` | 外部サービスに依存しない解析。`alts.py`（迷った別の読み）、`coach_view.py`（講評の「N手目」を押せる形にする）、`trend.py`（傾向まとめの規則と、AIの文の検証）、`kifu_analysis.py`（読み込み・全手解析・勝率変換）、`service.py`（深掘り・比較、画面用の指し手一覧と局面図）、`usi_engine.py`、`regret.py`（印とエンジン判定の突き合わせ。純粋関数）、`report.py`（ふりかえりノートのPDFと印刷用HTML。エンジンもLLMも呼ばない） |
+| `shogi_analyzer/` | 外部サービスに依存しない解析。`alts.py`（迷った別の読み）、`coach_view.py`（講評の「N手目」を押せる形にする）、`trend.py`（傾向まとめの規則と、AIの文の検証）、`kifu_analysis.py`（読み込み・全手解析・勝率変換）、`service.py`（深掘り・比較、画面用の指し手一覧と局面図）、`usi_engine.py`、`regret.py`（印とエンジン判定の突き合わせ。純粋関数）、`report.py`（ふりかえりノートのPDFと印刷用HTML。エンジンもLLMも呼ばない）、`credits.py`（やねうら王・水匠5のクレジット。画面のフッターに出す。`app.stop()` がフッターを出してから止める） |
 | `assets/fonts/` | PDFに埋め込む BIZ UDゴシック（SIL OFL 1.1）。`web.Dockerfile` でコピーする |
 | `shogi_coach/` | `agent.py`（指示文・ログ）、`trend.py`（傾向まとめを Gemini で書いて保存）、`tools.py`（エージェントの道具）、`session.py`、`engine_client.py`、`storage.py` |
 | `engine_service/` | shogi-engine（FastAPI）。本番では非公開で、web のサービスアカウントだけが呼べる |
