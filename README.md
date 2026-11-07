@@ -6,6 +6,7 @@
 - 公開URL: https://shogi-web-4u4mgk5qka-an.a.run.app （ログインして使います）
 - 将棋エンジン: [やねうら王](https://github.com/yaneurao/YaneuraOu)（[GitHub](https://github.com/yaneurao/YaneuraOu) / [Wiki](https://github.com/yaneurao/YaneuraOu/wiki)） + 評価関数 水匠5
 - 第5回 Agentic AI Hackathon with Google Cloud（Zenn）への提出作品
+- 記事URL : https://zenn.dev/hackathons/google-cloud-japan-ai-hackathon-vol5/projects/885d9341a17712 
 
 ![screenshot](docs_screenshot.png)
 
